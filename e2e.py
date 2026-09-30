@@ -47,7 +47,7 @@
 
     uv run python e2e.py --smoke                                  # 2 批，确认不炸
     uv run python e2e.py --arch mlp --out snake_e2e_mlp.pth       # 400 批，约 7 分钟
-    uv run python e2e.py --arch cnn --out snake_e2e_cnn.pth       # 400 批，约 1.5 小时
+    uv run python e2e.py --arch cnn --out snake_e2e_cnn.pth       # 400 批，实测 3.3 小时
 
     ⚠️ 【MPS 在这件事上比 CPU 慢】—— 反直觉，但量出来的：
 
@@ -55,7 +55,7 @@
        mlp    cpu    0.98s       6.5 分     ← 用这个
        mlp    mps    7.80s      52.0 分
        cnn    cpu   25.05s     167.0 分
-       cnn    mps   14.54s      96.9 分
+       cnn    mps   14.54s      96.9 分   ← 实测全程 3.3 小时
 
        原因：一批里有 1280 次【极小】的梯度更新（minibatch=128，输入才 8×8×4），
              每次都是独立的 kernel 启动。GPU 的启动开销吃掉了并行收益，
