@@ -64,8 +64,14 @@ print("=" * 68)
 print("贪吃蛇 · 看 PPO 自己玩")
 print("=" * 68)
 print(f"  模型: {CKPT}")
-print(f"  环境: {env.obs_dim} 维 (flood fill={int(env.use_space)} "
-      f"2步前瞻={int(env.use_deep)} 蛇尾可达={int(env.use_tail)})")
+# 两种表示：一维手工特征 vs (4,8,8) 原始网格
+_shape = env.observation_space.shape
+if len(_shape) == 3:
+    print(f"  输入: 原始网格 {tuple(_shape)} —— ch0 蛇身 / ch1 蛇头 / ch2 食物 / ch3 饥饿")
+    print(f"        ⚠️ 端到端版：没有 flood fill / 2步前瞻 / 蛇尾可达，网络要自己学")
+else:
+    print(f"  输入: {env.obs_dim} 维手工特征 (flood fill={int(env.use_space)} "
+          f"2步前瞻={int(env.use_deep)} 蛇尾可达={int(env.use_tail)})")
 print("  ESC 退出 | 空格 暂停/下一局 | Enter 下一局 | A 自动连播 | S 截图 | ↑↓ 调速")
 print("  ⚠️ 打开后先【点一下窗口】，键盘才生效")
 print("=" * 68)

@@ -59,6 +59,22 @@ from snake_env import SnakeEnv, W, MAX_HUNGER
 
 
 # ============================================================
+# 设备 —— 所有张量创建都走 _T()，换设备只改 DEVICE 这一行
+#
+#   特征版的 MLP 太小，CPU 就够了；端到端的 CNN 在 CPU 上
+#   一轮 400 批要 2~3 小时，换 MPS 是唯一现实的选择。
+#   （e2e.py 里会 `import ppo; ppo.DEVICE = torch.device("mps")`）
+# ============================================================
+DEVICE = torch.device("cpu")
+
+
+def _T(x, dtype=torch.float32):
+    """建张量的唯一入口。⚠️ 用 as_tensor 而不是 FloatTensor ——
+    FloatTensor 硬编码建在 CPU 上，模型搬到 MPS 之后会设备不匹配。"""
+    return torch.as_tensor(np.asarray(x), dtype=dtype).to(DEVICE)
+
+
+# ============================================================
 # 网络：actor / critic 【各有主干】（SepNet）
 # ============================================================
 class PPOActorCritic(nn.Module):
@@ -91,7 +107,7 @@ def collect_one_trajectory(env, model):
     state, _ = env.reset()
     while True:
         with torch.no_grad():
-            dist, value = model.dist_and_value(torch.FloatTensor(state).unsqueeze(0))
+            dist, value = model.dist_and_value(_T(state).unsqueeze(0))
             action = dist.sample()
 
         states.append(state)
@@ -156,8 +172,8 @@ def compute_gae_multi(rewards, values, traj_lengths, gamma=0.99, lam=0.95):
         all_advantages += adv_seg
         start += L
 
-    returns = torch.FloatTensor(all_returns)
-    advantages = torch.FloatTensor(all_advantages)
+    returns = _T(all_returns)
+    advantages = _T(all_advantages)
     # ⚠️ 整批标准化一次，切 minibatch 前定死
     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
     return returns, advantages
@@ -170,9 +186,9 @@ def ppo_update(model, optimizer, states, actions, old_log_probs, returns, advant
                clip_epsilon=0.2, epochs=10, minibatch_size=128,
                entropy_coef=0.01, critic_coef=0.5):
     n = len(states)
-    states_t = torch.FloatTensor(np.array(states))
-    actions_t = torch.LongTensor(actions)
-    old_lp_t = torch.FloatTensor(old_log_probs)
+    states_t = _T(np.array(states))
+    actions_t = _T(actions, torch.long)
+    old_lp_t = _T(old_log_probs)
 
     clip_hits, total_seen, grad_steps = 0, 0, 0
     last_actor = last_critic = last_entropy = 0.0
@@ -221,7 +237,7 @@ def evaluate(model, env, episodes=20, seed=12345):
         total = 0.0
         while True:
             with torch.no_grad():
-                probs, _ = model(torch.FloatTensor(state).unsqueeze(0))
+                probs, _ = model(_T(state).unsqueeze(0))
                 action = probs.argmax(dim=-1).item()
             state, reward, terminated, truncated, _ = env.step(action)
             total += reward
@@ -239,7 +255,7 @@ def eval_detail(model, env, episodes=50, seed=777):
         state, _ = env.reset(seed=seed + i)
         while True:
             with torch.no_grad():
-                probs, _ = model(torch.FloatTensor(state).unsqueeze(0))
+                probs, _ = model(_T(state).unsqueeze(0))
                 action = probs.argmax(dim=-1).item()
             state, reward, terminated, truncated, info = env.step(action)
             if terminated or truncated:
@@ -261,9 +277,14 @@ DEFAULT_CKPT = "snake_both.pth"      # 目前最好的一版：18 维，终测 5
 def load_for_view(path=None):
     """读 checkpoint → (env, model)。找不到文件直接退出并给出下一步。
 
-    ⚠️ 环境必须按【模型自带的配置】建 —— 9/12/15/18 维的特征布局不一样，
-       用错的环境喂进去不会报错，只会【静默玩得很烂】。
-       15 维还有歧义：+2步前瞻 和 +蛇尾可达 的特征顺序不同，光看维度猜不出来，
+    支持两种表示，看 checkpoint 里记的 obs_mode：
+
+        features  9/12/15/18 维手工特征  →  SnakeEnv + PPOActorCritic
+        grid      (4, 8, 8) 原始网格     →  GridObs(SnakeEnv) + GridActorCritic
+
+    ⚠️ 必须按【模型自带的配置】建环境 —— 用错了不会报错，只会【静默玩得很烂】。
+       特征版的 15 维还有歧义：+2步前瞻 和 +蛇尾可达 的特征顺序不同，
+       光看维度猜不出来。网格版更没法猜（(4,8,8) 和 (18,) 是两种完全不同的输入）。
        所以配置必须跟权重存一起。
     """
     path = path or DEFAULT_CKPT
@@ -272,15 +293,30 @@ def load_for_view(path=None):
     except FileNotFoundError:
         sys.exit(f"❌ 找不到 {path}\n   先在这个目录下跑：uv run python ppo.py")
 
-    if isinstance(ckpt, dict) and "state_dict" in ckpt:      # 新格式：带环境配置
-        state_dict, env_kw = ckpt["state_dict"], ckpt.get("env_kw", {})
+    if isinstance(ckpt, dict) and "state_dict" in ckpt:      # 新格式：带配置
+        state_dict = ckpt["state_dict"]
+        env_kw = ckpt.get("env_kw", {})
+        obs_mode = ckpt.get("obs_mode", "features")
+        arch = ckpt.get("arch", "mlp")
     else:                                                     # 旧格式：裸 state_dict
-        state_dict, env_kw = ckpt, {}
+        state_dict, env_kw, obs_mode, arch = ckpt, {}, "features", "mlp"
         print("⚠️ 旧格式 checkpoint（没记录环境配置），按 12 维默认环境跑")
 
-    env = SnakeEnv(**env_kw)
-    model = PPOActorCritic(state_dim=env.obs_dim, action_dim=3, hidden_size=128)
+    if obs_mode == "grid":
+        # 懒加载：只有看网格模型时才需要这个模块，也顺便避开 import 环
+        #   （依赖方向是 ppo → e2e_grid → snake_env，没有环）
+        from e2e_grid import GridObs, GridActorCritic, N_CH
+        env = GridObs(SnakeEnv(**env_kw))
+        model = GridActorCritic(obs_shape=(N_CH, env.W, env.W), action_dim=3,
+                                hidden_size=128, arch=arch)
+    else:
+        env = SnakeEnv(**env_kw)
+        model = PPOActorCritic(state_dim=env.obs_dim, action_dim=3, hidden_size=128)
+
+    # ⚠️ 权重可能是用别的设备训的（e2e.py 支持换设备），
+    #    看的时候一律搬回 CPU —— 看是交互式的，慢一点无所谓，别搞出设备不匹配。
     model.load_state_dict(state_dict)
+    model.to("cpu")
     model.eval()
     return env, model
 
