@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>强化学习通关【贪吃蛇】</title>
+<style>
+:root{
+  --bg:#f6f5f1; --surface:#ffffff; --surface-2:#efeee8;
+  --fg:#1b1f24; --fg-soft:#5a6270; --fg-faint:#8b93a1;
+  --line:#dcdad2; --line-soft:#e8e6df;
+  --accent:#1f8a4c; --accent-soft:#e2f1e7;
+  --warn:#b4632a; --warn-soft:#f7ece1;
+  --cool:#2f6d9e; --cool-soft:#e4eef6;
+  --sans:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --display:"Space Grotesk","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#12151b; --surface:#1a1e26; --surface-2:#222731;
+  --fg:#e6e9ee; --fg-soft:#a3acba; --fg-faint:#6f7889;
+  --line:#2e3541; --line-soft:#262c36;
+  --accent:#4fce86; --accent-soft:#16301f;
+  --warn:#e0a165; --warn-soft:#2e2115;
+  --cool:#7fb4dd; --cool-soft:#152530;
+  color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --bg:#12151b; --surface:#1a1e26; --surface-2:#222731;
+  --fg:#e6e9ee; --fg-soft:#a3acba; --fg-faint:#6f7889;
+  --line:#2e3541; --line-soft:#262c36;
+  --accent:#4fce86; --accent-soft:#16301f;
+  --warn:#e0a165; --warn-soft:#2e2115;
+  --cool:#7fb4dd; --cool-soft:#152530;
+  color-scheme:dark;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font-family:var(--sans); font-size:16.5px; line-height:1.85;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:760px; margin:0 auto; padding-block:0 96px; padding-inline:20px}
+
+/* ---------- 头 ---------- */
+header{padding-block:64px 56px; border-bottom:1px solid var(--line)}
+.eyebrow{
+  font-family:var(--display); font-size:12.5px; font-weight:600;
+  letter-spacing:.16em; text-transform:uppercase; color:var(--accent);
+  margin:0 0 20px;
+}
+h1{
+  font-family:var(--display); font-size:clamp(34px,7vw,52px); line-height:1.18;
+  font-weight:700; letter-spacing:-.01em; margin:0 0 18px; text-wrap:balance;
+}
+.dek{font-size:19px; color:var(--fg-soft); margin:0; max-width:34em; line-height:1.7}
+.meta{
+  margin-top:28px; font-family:var(--mono); font-size:12.5px;
+  color:var(--fg-faint); letter-spacing:.02em;
+}
+.meta span{white-space:nowrap}
+.meta i{font-style:normal; color:var(--line); margin-inline:10px}
+
+/* ---------- 通用 ---------- */
+h2{
+  font-family:var(--display); font-size:clamp(23px,4.2vw,29px); font-weight:700;
+  line-height:1.35; letter-spacing:-.005em;
+  margin:76px 0 20px; text-wrap:balance;
+}
+h2 .num{
+  font-family:var(--mono); font-size:13px; font-weight:500; color:var(--accent);
+  letter-spacing:.08em; display:block; margin-bottom:8px;
+}
+h3{font-size:17px; font-weight:600; margin:36px 0 12px}
+p{margin:0 0 18px}
+strong{font-weight:600; color:var(--fg)}
+em{font-style:normal; background:var(--accent-soft); color:var(--accent);
+   padding:.1em .38em; border-radius:4px; font-weight:600}
+code{font-family:var(--mono); font-size:.87em; background:var(--surface-2);
+     padding:.14em .42em; border-radius:4px; color:var(--fg-soft)}
+
+/* ---------- 图 ---------- */
+figure{margin:32px 0; }
+figure img{width:100%; height:auto; display:block; border-radius:10px;
+           border:1px solid var(--line); background:#12151b}
+figcaption{
+  font-size:13.5px; color:var(--fg-faint); margin-top:12px; line-height:1.65;
+}
+
+/* ---------- 三件事 ---------- */
+.three{display:grid; gap:12px; grid-template-columns:repeat(3,1fr); margin:28px 0}
+@media (max-width:600px){.three{grid-template-columns:1fr}}
+.three > div{
+  background:var(--surface); border:1px solid var(--line-soft);
+  border-radius:10px; padding:16px 16px 18px;
+}
+.three dt{
+  font-family:var(--mono); font-size:11px; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--fg-faint); margin-bottom:8px;
+}
+.three dd{margin:0; font-size:15px; line-height:1.6}
+.three .big{font-family:var(--display); font-size:17px; font-weight:600; display:block; margin-bottom:4px}
+
+/* ---------- 引用块 ---------- */
+.pull{
+  border-left:3px solid var(--accent); background:var(--accent-soft);
+  padding:20px 22px; border-radius:0 10px 10px 0; margin:30px 0;
+  font-size:17px; line-height:1.75;
+}
+.pull p:last-child{margin-bottom:0}
+.note{
+  border-left:3px solid var(--warn); background:var(--warn-soft);
+  padding:16px 20px; border-radius:0 10px 10px 0; margin:26px 0;
+  font-size:15px; color:var(--fg-soft); line-height:1.75;
+}
+.note p:last-child{margin-bottom:0}
+.note b{color:var(--warn)}
+
+/* ---------- 拉平示意 ---------- */
+.flat{display:grid; gap:26px; grid-template-columns:auto 1fr; align-items:center; margin:30px 0}
+@media (max-width:600px){.flat{grid-template-columns:1fr; gap:18px}}
+.grid8{
+  display:grid; grid-template-columns:repeat(8,15px); gap:3px;
+  padding:10px; background:var(--surface); border:1px solid var(--line-soft); border-radius:8px;
+  width:max-content;
+}
+.grid8 i{width:15px; height:15px; border-radius:3px; background:var(--surface-2); display:block}
+.grid8 i.on{background:var(--accent)}
+.grid8 i.hi{background:var(--warn)}
+.row256{
+  display:grid; grid-template-columns:repeat(16,1fr); gap:2px;
+  font-family:var(--mono); font-size:8.5px; line-height:1;
+}
+.row256 s{
+  text-decoration:none; text-align:center; padding:3px 0; border-radius:2px;
+  background:var(--surface-2); color:var(--fg-faint);
+}
+.row256 s.hi{background:var(--warn-soft); color:var(--warn); font-weight:700}
+
+/* ---------- 表 ---------- */
+.scroll{overflow-x:auto; margin:26px 0; -webkit-overflow-scrolling:touch}
+table{border-collapse:collapse; width:100%; font-size:14.5px; min-width:520px}
+th,td{padding:11px 14px; text-align:right; border-bottom:1px solid var(--line-soft);
+      font-variant-numeric:tabular-nums}
+th:first-child,td:first-child{text-align:left; font-variant-numeric:normal}
+thead th{
+  font-family:var(--mono); font-size:11.5px; font-weight:500; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--fg-faint); border-bottom:1px solid var(--line);
+  padding-bottom:9px;
+}
+tbody tr:last-child td{border-bottom:none}
+td.hl{font-weight:700; color:var(--accent)}
+tr.win td{background:var(--accent-soft)}
+.mono{font-family:var(--mono); font-size:13px}
+
+/* ---------- 直方图 ---------- */
+.chart{margin:30px 0; background:var(--surface); border:1px solid var(--line-soft);
+       border-radius:12px; padding:22px 20px 16px}
+.chart-title{font-family:var(--display); font-size:13px; font-weight:600;
+             letter-spacing:.04em; color:var(--fg-soft); margin-bottom:18px}
+.rows{display:grid; gap:14px}
+.row{display:grid; grid-template-columns:112px 1fr; gap:12px; align-items:center}
+@media (max-width:600px){.row{grid-template-columns:1fr; gap:6px}}
+.row .lbl{font-size:13.5px; color:var(--fg-soft); line-height:1.35}
+.row .lbl b{display:block; color:var(--fg); font-weight:600; font-size:14px}
+.bars{display:grid; grid-template-columns:repeat(7,1fr); gap:4px; align-items:end; height:76px}
+.bars > div{display:flex; flex-direction:column; justify-content:flex-end; height:100%}
+.bars span{display:block; border-radius:3px 3px 0 0; min-height:2px}
+.bars .c1 span{background:var(--accent)}
+.bars .c2 span{background:var(--cool)}
+.bars .c3 span{background:var(--fg-faint)}
+.axis{display:grid; grid-template-columns:repeat(7,1fr); gap:4px; margin-top:7px;
+      padding-top:7px; border-top:1px solid var(--line-soft)}
+.axis span{font-family:var(--mono); font-size:9.5px; color:var(--fg-faint);
+           text-align:center; letter-spacing:-.02em}
+.legend{display:flex; flex-wrap:wrap; gap:16px; margin-top:16px; font-size:12.5px; color:var(--fg-faint)}
+.legend i{display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:6px}
+.legend .a i{background:var(--accent)} .legend .b i{background:var(--cool)} .legend .c i{background:var(--fg-faint)}
+
+/* ---------- 数字条 ---------- */
+.stats{display:grid; gap:1px; background:var(--line-soft); border-radius:10px;
+       overflow:hidden; margin:28px 0; grid-template-columns:repeat(3,1fr)}
+@media (max-width:600px){.stats{grid-template-columns:1fr}}
+.stats > div{background:var(--surface); padding:18px 16px}
+.stats dt{font-size:12.5px; color:var(--fg-faint); margin-bottom:7px; line-height:1.4}
+.stats dd{margin:0; font-family:var(--display); font-size:25px; font-weight:700;
+          letter-spacing:-.01em; line-height:1.15}
+.stats dd small{font-family:var(--sans); font-size:12.5px; font-weight:400;
+                color:var(--fg-faint); display:block; margin-top:5px; letter-spacing:0}
+
+/* ---------- 结尾 ---------- */
+.close{
+  margin-top:80px; padding:30px 26px; background:var(--surface);
+  border:1px solid var(--line); border-radius:12px;
+}
+.close h2{margin-top:0}
+footer{
+  margin-top:56px; padding-top:26px; border-top:1px solid var(--line);
+  font-size:13px; color:var(--fg-faint); line-height:1.8;
+}
+footer code{font-size:12px}
+ul{margin:0 0 18px; padding-left:1.3em}
+li{margin-bottom:9px}
+li::marker{color:var(--fg-faint)}
+h3 .q{font-family:var(--mono);font-size:13px;font-weight:500;letter-spacing:.04em;color:var(--accent);margin-right:9px;}
+
+blockquote{
+  margin:26px 0; padding:18px 22px; background:var(--surface);
+  border:1px solid var(--line-soft); border-left:3px solid var(--accent);
+  border-radius:0 10px 10px 0; color:var(--fg-soft); font-size:15px; line-height:1.75;
+}
+blockquote p{margin:0 0 12px}
+blockquote p:last-child{margin-bottom:0}
+blockquote strong{color:var(--fg)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">强化学习 · 一个对照实验</p>
+  <h1>强化学习通关【贪吃蛇】</h1>
+  <p class="dek">用强化学习来玩游戏</p>
+  
+</header>
+
+<h2><span class="num">00</span>问题</h2>
+
+<p>最近学习强化学习，就想到了不如用一个游戏来加深强化学习里的知识，所以就想到 <strong>贪吃蛇</strong>。</p>
+
+<p>todo：github 地址</p>
+
+<p>todo：在线体验的地址</p>
+
+<p><strong>任务</strong>：玩贪吃蛇，8×8 的棋盘。</p>
+
+<p><strong>目标</strong>：<strong>不告诉它规则。</strong> 不写「前面是墙就转弯」，也不写「朝豆子走」。 只有一个分数 —— 吃到豆 <strong>+1</strong>，撞死或饿死 <strong>−1</strong>。</p>
+
+<p><strong>过程</strong>：使用 PPO 算法，一直训练，直接收敛成一个稳定的策略。</p>
+
+<div class="scroll">
+<table>
+<thead>
+<tr>
+<th></th>
+<th>是什么</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td class="hl"><strong>状态</strong></td>
+<td>那 8×8 个格子</td>
+<td>蛇在哪、豆在哪、朝哪边</td>
+</tr>
+<tr>
+<td class="hl"><strong>动作</strong></td>
+<td>只有三个</td>
+<td>左转 / 直行 / 右转</td>
+</tr>
+<tr>
+<td class="hl"><strong>奖励</strong></td>
+<td>+1 或 −1</td>
+<td>吃到豆，或者死掉</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h2><span class="num">01</span>三种方案</h2>
+
+<p>一开始，让 AI 做了一份贪吃蛇的游戏，可以真人去玩，同时可以通过 API 拿到游戏状态和奖励，同时可以使用 API 去控制蛇的走动。 在此基础上想了三个方案来训练：</p>
+
+<h3>① 先验规则 + MLP</h3>
+
+<p>把棋盘上的信息写成 18 个数字喂进去。这 18 个数字分成两半：</p>
+
+<p><strong>6 个是直接从棋盘读出来的</strong>（不用计算）：</p>
+
+<div class="scroll">
+<table>
+<thead>
+<tr>
+<th></th>
+<th>是什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>食物在前还是在后</td>
+<td>相对蛇头朝向</td>
+</tr>
+<tr>
+<td>食物在左还是在右</td>
+<td>同上，跟着朝向旋转</td>
+</tr>
+<tr>
+<td>食物有多远</td>
+<td>曼哈顿距离</td>
+</tr>
+<tr>
+<td>有多饿</td>
+<td>距离上次吃到豆走了多少步</td>
+</tr>
+<tr>
+<td>蛇有多长</td>
+<td>当前节数</td>
+</tr>
+<tr>
+<td>头离尾巴多远</td>
+<td>曼哈顿距离</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<p><strong>12 个是人写程序算出来的规则</strong> —— 4 组 × 3 个动作，每组都在问「如果我走这个动作，会怎样」：</p>
+
+<div class="scroll">
+<table>
+<thead>
+<tr>
+<th></th>
+<th>问的问题</th>
+<th>怎么算</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>危险码</td>
+<td>走这一步会立刻死吗</td>
+<td>只看前面一格</td>
+</tr>
+<tr>
+<td>flood fill</td>
+<td>走完这一步，还剩多少空格可去</td>
+<td>走一步 + 数连通块</td>
+</tr>
+<tr>
+<td>2 步前瞻</td>
+<td>走完再走一步，最差还剩多少</td>
+<td>走两步 + 数连通块</td>
+</tr>
+<tr>
+<td>蛇尾可达</td>
+<td>走完这一步，还追得到自己的尾巴吗</td>
+<td>走一步 + 找路</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<p>这些规则当然是人想出来的，也是人经过思考和经验积累总结出来的一些规则，我们都叫做 <strong>先验规则</strong>。</p>
+
+<h3>② 纯 CNN 卷积网络</h3>
+
+<p>不给先验规则，给 4 张 8×8 的图：蛇身、蛇头、豆子、还剩多久饿死。用卷积网络接。</p>
+
+<p>用<strong>卷积网络</strong>，就是因为卷积能保留「哪个格子在哪个位置」这个信息 —— 它拿一个小窗口在图上滑动， 等于告诉网络「相邻的格子是相关的」。</p>
+
+<h3>③ 纯 MLP</h3>
+
+<p>和 <strong>CNN</strong> 的训练方法一致，仅仅是把模型换成了纯的 MLP。</p>
+
+<p>PS：同样 4 张图，但<strong>拉平成一串 256 个数</strong>再喂进去。信息一个没少，<strong>位置没了</strong>。</p>
+
+<h2><span class="num">02</span>结果</h2>
+
+<p>三种方案都训练了 <strong>400 轮 × 32 局 = 12,800 局</strong>，但花的时间和力气差很多：</p>
+
+<div class="scroll">
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>训练局数</th>
+<th>训练步数</th>
+<th>训练耗时</th>
+<th>模型大小</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 先验规则 + MLP</td>
+<td>12,800</td>
+<td>794 万</td>
+<td><strong>39 分钟</strong></td>
+<td><strong>38 K</strong></td>
+</tr>
+<tr>
+<td>② 纯 CNN</td>
+<td>12,800</td>
+<td>431 万</td>
+<td>3.3 小时</td>
+<td>153 K</td>
+</tr>
+<tr>
+<td>③ 纯 MLP</td>
+<td>12,800</td>
+<td>391 万</td>
+<td>10 分钟</td>
+<td>99 K</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<blockquote>
+<p><strong>耗时那列别直接比。</strong> ② 跑在 GPU 上，①③ 跑在 CPU 上。换算到同一硬件，② 要 5~6 小时。</p>
+</blockquote>
+
+<p>测试是 50 局、固定种子，所以三种方案面对的是<strong>同一批局面</strong>。</p>
+
+<figure>
+  <img src="snake_e2e_cnn_filmstrip.png" alt="② 打的一局：61 个豆、596 步，最后蛇身填满整个棋盘">
+  <figcaption>② 打的一局：61 个豆、596 步，最后蛇身填满整个棋盘</figcaption>
+</figure>
+
+<div class="scroll">
+<table>
+<thead>
+<tr>
+<th>方案</th>
+<th>平均豆</th>
+<th>打满的局</th>
+<th>没打满时平均拿多少</th>
+<th>最差的一局</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 先验规则 + MLP</td>
+<td><strong>59.1</strong></td>
+<td>34 / 50</td>
+<td><strong>55.1</strong></td>
+<td>37</td>
+</tr>
+<tr>
+<td>② 纯 CNN</td>
+<td>50.8</td>
+<td>32 / 50</td>
+<td>32.7</td>
+<td>2</td>
+</tr>
+<tr>
+<td>③ 纯 MLP</td>
+<td>33.2</td>
+<td>0 / 50</td>
+<td>33.2</td>
+<td>2</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<p>先看「打满的局」：① 和 ② 差不多，68% 对 64%，只差两局。 很容易得出「不给人工特征也行」—— <strong>但这是错的。</strong> 差别在最后两列。</p>
+
+<figure>
+  <img src="fig_histogram.png" alt="">
+</figure>
+
+<p><strong>结论：</strong></p>
+
+<p>1. <strong>先验规则 + MLP</strong> 和 <strong>纯 CNN</strong>，都可以完成任务；纯 MLP 暂时没有看到完成的机会。</p>
+
+<p>2. <strong>先验规则 + MLP</strong> 和 <strong>纯 CNN</strong>  虽然都能完成，但他们的成本是有差异的</p>
+
+<p>1. 时间： <strong>39 分钟</strong> vs <strong>3.3 小时</strong> 2. 特征：需要 vs 不需要</p>
+
+<p>3. <strong>纯 MLP</strong>，完全走不通的</p>
+
+<p>4. <strong>先验规则 + MLP</strong> 和 <strong>纯 CNN</strong> 继续训练，应该是会更加的准确</p>
+
+<h2><span class="num">03</span>三个问题</h2>
+
+<h3><span class="q">Q1</span>为什么纯 MLP 上不去？</h3>
+
+<p><strong>因为它没有位置信息。</strong></p>
+
+<figure>
+  <img src="fig_flatten.png" alt="">
+</figure>
+
+<h3><span class="q">Q2</span>为什么纯 CNN 反而行？</h3>
+
+<p><strong>因为结构对了。</strong></p>
+
+<p>棋盘本来就是二维格子，相邻的格子互相影响。卷积的先验正好对上这个对象。</p>
+
+<p>它一条先验规则都没拿到，中位数却是满分，满分率和 ① 只差两局。</p>
+
+<blockquote>
+<p><strong>它内部还自己长出了人算过的东西。</strong> 把网络冻住去读它中间层的 128 个数， 「还剩多少空格」「追不追得到尾巴」这两个读出来的准确度有 0.95~0.97 —— 没人告诉过它「连通块」是什么。把那两个方向抹掉，它就从 50.8 崩到 20 出头。</p>
+</blockquote>
+
+<h3><span class="q">Q3</span>什么时候选 纯 CNN 和 先验规则？</h3>
+
+<p><strong>看「你知不知道该看什么」。</strong></p>
+
+<p>① 在这个实验里几乎每一项都更好，但它靠的是<strong>人先把规则想出来了</strong> —— 那 12 条规则搬不到别的任务上。</p>
+
+<div class="scroll">
+<table>
+<thead>
+<tr>
+<th>知不知道该看什么</th>
+<th>选</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>知道 —— 棋盘、表格、传感器读数</td>
+<td>先验规则 + MLP</td>
+</tr>
+<tr>
+<td>不知道 —— 原始画面、原始音频</td>
+<td>纯 CNN</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<p>任务多、经常变 → 端到端（特征设计的工作量会翻几十倍）。 只要一个、要稳 → 先验规则（① 没打满还能拿 55，② 最差只有 2）。</p>
+
+<p><strong>① 的卖点是更快更稳，② 的卖点是换个任务不用重来。</strong></p>
+
+<h2><span class="num">04</span>结论</h2>
+
+<ul>
+  <li><strong>把人想明白的算好喂进去：模型小、学得快、下限高。</strong> 代价是换个任务要重来一遍。</li>
+  <li><strong>给对结构，网络能自己学出来。</strong> 纯 CNN 没有先验规则，中位数照样满分。</li>
+  <li><strong>结构给错就上不去。</strong> 比如 MLP。</li>
+</ul>
+
+</div>
+<script>
+(function(){
+  var ON   = [[0,0],[0,1],[0,2],[1,0],[1,2],[2,0],[2,1],[2,2]];
+  var WRAP = [[0,7],[1,0]];   // 下标 7 和 8
+  var isIn = function(a,r,c){ return a.some(function(p){return p[0]===r && p[1]===c;}); };
+  var g = document.getElementById('g8');
+  for (var i=0;i<64;i++){
+    var r = Math.floor(i/8), c = i%8, el = document.createElement('i');
+    if (isIn(ON,r,c))   el.classList.add('on');
+    if (isIn(WRAP,r,c)) el.classList.add('hi');
+    g.appendChild(el);
+  }
+  var row = document.getElementById('r256');
+  for (var i=0;i<64;i++){
+    var r = Math.floor(i/8), c = i%8, s = document.createElement('s');
+    s.textContent = isIn(ON,r,c) ? '1' : '0';
+    if (isIn(WRAP,r,c)) s.classList.add('hi');
+    row.appendChild(s);
+  }
+})();
+
+(function(){
+  var AXIS = ['0–10','11–20','21–30','31–40','41–50','51–60','满分'];
+  var DATA = [
+    {name:'① 特征量 + MLP', cls:'c1', v:[0,0,0,2,1,13,34]},
+    {name:'② 纯 CNN',      cls:'c2', v:[3,1,1,8,2,3,32]},
+    {name:'③ 纯 MLP',      cls:'c3', v:[3,4,6,26,11,0,0]}
+  ];
+  var MAX = 34, box = document.getElementById('hist');
+  DATA.forEach(function(d){
+    var row = document.createElement('div'); row.className = 'row';
+    var lbl = document.createElement('div'); lbl.className = 'lbl';
+    lbl.innerHTML = d.name + '<b>打满 ' + d.v[6] + ' / 50</b>';
+    var bars = document.createElement('div'); bars.className = 'bars';
+    d.v.forEach(function(n, i){
+      var cell = document.createElement('div'); cell.className = d.cls;
+      var bar = document.createElement('span');
+      bar.style.height = (n / MAX * 100) + '%';
+      bar.title = AXIS[i] + '：' + n + ' 局';
+      cell.appendChild(bar); bars.appendChild(cell);
+    });
+    row.appendChild(lbl); row.appendChild(bars); box.appendChild(row);
+  });
+})();
+</script>
+</body>
+</html>
