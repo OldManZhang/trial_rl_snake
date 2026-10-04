@@ -566,34 +566,65 @@ uv run python watch.py snake_e2e_mlp.pth                    # 看端到端模型
 
 ## 九、文件
 
-**特征版（手工设计状态）：**
+**① 特征版（手工设计状态）—— 5 个脚本**
 
 | 文件 | 干什么 |
 |---|---|
-| **`snake_env.py`** | **游戏本体** —— Gymnasium 接口 + 渲染 + 字体 + **53 条内置自测** |
-| **`ppo.py`** | **训练脚本**；同时是共用模块（网络 / GAE / 评估 / `load_for_view`）|
-| `play.py` | **你自己用键盘玩** |
-| `random_baseline.py` | 随机策略基线（地板线）|
-| `heuristic.py` | 两档手写规则 AI（目标线 + 上界参照）|
+| **`snake_env.py`** | **游戏本体** —— Gymnasium 接口 + 渲染 + 字体 + **53 条内置自测**。整条线的地基，后面所有东西都建立在它上面 |
+| **`ppo.py`** | **训练脚本**；同时是共用模块（网络 / GAE / `ppo_update` / 评估 / `load_for_view`）。端到端那版直接从它 import，没有副本 |
+| `play.py` | **你自己用键盘玩** —— 验收游戏本身对不对 |
+| `random_baseline.py` | 随机策略基线（**地板线 0.16 豆**）|
+| `heuristic.py` | 两档手写规则 AI（**目标线 17.84 / 24.04 豆**）。PPO 必须打赢它 |
 
-**端到端版（原始网格）：**
-
-| 文件 | 干什么 |
-|---|---|
-| **`e2e_grid.py`** | **表示层** —— `GridObs` wrapper（不改 `snake_env.py`）+ 两个网络 + **48 条自测** |
-| **`e2e.py`** | **端到端训练脚本**（算法直接从 `ppo.py` import，没有副本）|
-
-**两边共用：**
+**② 端到端版（原始网格）—— 3 个脚本**
 
 | 文件 | 干什么 |
 |---|---|
-| `watch.py` | 开窗口实时看（右侧数据面板；自动认特征版 / 网格版）|
-| `record.py` | 不开窗口，把最好的一局拼成胶片图 |
-| `requirements.txt` | 依赖清单（单独拿走这个目录时用）|
-| `snake_both.pth` / `snake_long.pth` / `snake_e2e_*.pth` | 训练产物（**不入库**）|
-| `snake_filmstrip.png` | 特征版打的一局（满分 61 豆）|
+| **`e2e_grid.py`** | **表示层** —— `GridObs` wrapper（`snake_env.py` 一行不改）+ `GridActorCritic` 两个 arch + **48 条自测** |
+| **`e2e.py`** | **端到端训练脚本**。算法全从 `ppo.py` import，**只换了输入的样子** |
+| **`probe_cnn.py`** | **探针** —— 冻住训好的 CNN，从中间层 128 维回归「还剩多少空格」「追不追得到尾巴」等量，再做**投影消融**看它是不是真在用。默认读 `snake_e2e_cnn.pth`、跑 260 局 |
+
+**③ 两边共用 —— 2 个脚本**
+
+| 文件 | 干什么 |
+|---|---|
+| `watch.py` | 开窗口实时看（右侧数据面板：局数 / 长度 / 死因累计 / 最近 12 局柱状图）。**自动认特征版还是网格版** |
+| `record.py` | 不开窗口，扫 60 局挑最好的一局拼成胶片图 |
+
+**④ 训练产物（`.pth`，`*.pth` 在 `.gitignore` 里，不入库）**
+
+| 文件 | 是什么 |
+|---|---|
+| `snake_both.pth` | **18 维先验规则版** —— 最强，59.12 豆。`watch.py` / `record.py` 不给参数时默认加载它 |
+| `snake_long.pth` | 12 维长训练版（消融对照，34.84 豆）|
+| `snake_e2e_mlp.pth` | 端到端 MLP 版（33.24 豆）|
+| `snake_e2e_cnn.pth` | 端到端 CNN 版（50.82 豆）。`probe_cnn.py` 默认读它 |
+
+**⑤ 图片**
+
+| 文件 | 是什么 |
+|---|---|
+| `snake_filmstrip.png` | 特征版打的一局（**满分 61 豆**）|
 | `snake_e2e_filmstrip.png` | 端到端 **MLP** 版打的一局（45 豆）|
-| `snake_e2e_cnn_filmstrip.png` | 端到端 **CNN** 版打的一局（**满分 61 豆**）|
+| `snake_e2e_cnn_filmstrip.png` | 端到端 **CNN** 版打的一局（**满分 61 豆**）← 文章里的那张 |
+| `fig_flatten.png` | 文章配图：拉平成一维之后，位置信息是怎么丢的 |
+| `fig_histogram.png` | 文章配图：三种方案的 50 局分布 |
+
+> 前两张胶片图由 `record.py` 生成；`fig_*.png` 是画文章配图的脚本一次性产出的，**生成脚本没有固化**（`pygame` 手绘，改配色要重跑）。
+
+**⑥ 三份文档，给谁看**
+
+| 文件 | 给谁看 |
+|---|---|
+| **`README.md`** | **本文件** —— 这个例子的完整说明：设计 / 踩的坑 / 怎么跑 |
+| `用强化学习通关贪食蛇.md` | **文章** —— 三种方案的对比，写给外人看，**不含过程和翻车** |
+| `EXPERIMENT.md` | **实验记录** —— 全过程时间线 + 预期 vs 结果，写给自己的，**专门保留翻车** |
+
+**⑦ 其他**
+
+| 文件 | 干什么 |
+|---|---|
+| `requirements.txt` | 依赖清单。只在**单独拿走这个目录**时需要装；还在原项目里就直接 `uv run python xxx.py` |
 
 ---
 
@@ -638,6 +669,7 @@ uv run python e2e_grid.py              # 表示层自测（48 条断言）
 uv run python e2e.py --smoke           # 烟测（2 批）
 uv run python e2e.py --arch mlp --out snake_e2e_mlp.pth   # 训练（10 分钟）
 uv run python e2e.py --arch cnn --out snake_e2e_cnn.pth   # 训练（3.3 小时）
+uv run python probe_cnn.py             # 探针 + 投影消融（读 snake_e2e_cnn.pth，260 局）
 
 # ---- 两边共用 ----
 uv run python watch.py                 # 看模型玩（自动认是哪种表示）
