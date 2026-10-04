@@ -10,15 +10,16 @@
 
 ## 一、最快看到效果（不用训练）
 
-本目录里已经有一份训练好的 `snake_both.pth`（18 维，终测 59.12 个豆）：
+**本仓库带了训练好的模型，clone 下来直接就能看它玩：**
 
 ```bash
-uv run python watch.py            # 开窗口看它自己玩（默认就加载这份）
-uv run python record.py           # 或者出一张胶片图，不用开窗口
+uv run python watch.py                        # 18 维先验规则版（最强，59.12 豆）← 不给参数就加载它
+uv run python watch.py snake_e2e_cnn.pth      # 端到端 CNN 版（50.82 豆，中位数满分）
+uv run python record.py                       # 或者出一张胶片图，不用开窗口
 ```
 
-> ⚠️ `.pth` 是训练产物，`.gitignore` 里不入库（和 `acrobot/` 一样）。
-> **所以重新 clone 出来是空的，要先自己训一次。**
+> 四个模型都在仓库里，一共 1.3 MB：`snake_both.pth` · `snake_long.pth` ·
+> `snake_e2e_mlp.pth` · `snake_e2e_cnn.pth`。不想下载就自己训 —— 见第二节。
 
 **只想花 17 秒看个大概**，就跑 12 维的快速版：
 
@@ -627,7 +628,7 @@ snake_env.py ──── 游戏本体。下面【每一个】脚本都 import �
 
 ### 训练产物（`.pth`）
 
-> `*.pth` 在 `.gitignore` 里，**不入库** —— 重跑一遍就有，不用占仓库。
+> 四个模型**都入库了**（一共 1.3 MB）—— 这样 clone 下来不用先训 3.3 小时就能看它玩。
 
 | 文件 | 是什么 |
 |---|---|
@@ -660,33 +661,30 @@ snake_env.py ──── 游戏本体。下面【每一个】脚本都 import �
 
 | 文件 | 干什么 |
 |---|---|
-| `requirements.txt` | 依赖清单。只在**单独拿走这个目录**时需要装；还在原项目里就直接 `uv run python xxx.py` |
+| `requirements.txt` | 依赖清单。本仓库是**独立**的，照它装就行 |
 
 ---
 
 ## 十、怎么装、怎么跑
 
-需要 **Python ≥ 3.12**。
-
-**情况 A：还在原项目里**（上层有 `pyproject.toml`）
+需要 **Python ≥ 3.12**，用 [uv](https://docs.astral.sh/uv/) 管依赖。
 
 ```bash
-cd snake
-uv run python ppo.py
-```
-
-**情况 B：单独拿走这个目录**
-
-```bash
+git clone git@github.com:OldManZhang/trial_rl_snake.git
+cd trial_rl_snake
 uv venv && uv pip install -r requirements.txt
-uv run python ppo.py
+
+uv run python watch.py            # 先看它自己玩一局
 ```
+
+> 如果这个目录被放进一个已经有 `pyproject.toml` 的项目里，
+> `uv venv && uv pip install` 那步可以省掉，直接 `uv run python xxx.py`。
 
 > ⚠️ **必须在【本目录下】运行。** 脚本里用的是相对当前目录的路径（`snake_both.pth`），
 > 而且 `watch.py` / `record.py` 要 `from snake_env import ...`。
 >
-> ⚠️ 和前三个例子不同，这里**显式依赖 `pygame`** ——
-> 因为自写环境直接用 pygame 画格子，不是通过 `gymnasium[box2d]` 间接带进来的。
+> ⚠️ 注意**显式依赖 `pygame`** —— 自写环境直接用 pygame 画格子，
+> 不是通过 `gymnasium[box2d]` 间接带进来的，所以 `requirements.txt` 里专门列了它。
 
 ### 脚本速查
 
