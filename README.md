@@ -566,17 +566,46 @@ uv run python watch.py snake_e2e_mlp.pth                    # 看端到端模型
 
 ## 九、文件
 
-**① 特征版（手工设计状态）—— 5 个脚本**
+### 先看依赖关系
+
+```
+snake_env.py ──── 游戏本体。下面【每一个】脚本都 import 它
+     │
+     ├─ ppo.py ─────────┬─ e2e.py          端到端训练：算法直接 import，没有副本
+     │  训练 + 共用模块   ├─ watch.py        两种表示都认
+     │                  └─ record.py
+     │
+     ├─ e2e_grid.py ────┬─ e2e.py
+     │  网格表示层       └─ probe_cnn.py    只对 CNN 做分析
+     │
+     ├─ play.py            你自己玩（原始游戏）
+     └─ random_baseline.py ── heuristic.py
+```
+
+### 地层：谁都要
 
 | 文件 | 干什么 |
 |---|---|
-| **`snake_env.py`** | **游戏本体** —— Gymnasium 接口 + 渲染 + 字体 + **53 条内置自测**。整条线的地基，后面所有东西都建立在它上面 |
-| **`ppo.py`** | **训练脚本**；同时是共用模块（网络 / GAE / `ppo_update` / 评估 / `load_for_view`）。端到端那版直接从它 import，没有副本 |
-| `play.py` | **你自己用键盘玩** —— 验收游戏本身对不对 |
-| `random_baseline.py` | 随机策略基线（**地板线 0.16 豆**）|
-| `heuristic.py` | 两档手写规则 AI（**目标线 17.84 / 24.04 豆**）。PPO 必须打赢它 |
+| **`snake_env.py`** | **游戏本体** —— Gymnasium 接口 + 渲染 + 字体 + **53 条自测**。**全部 8 个脚本都 import 它**，端到端那三个也不例外 |
 
-**② 端到端版（原始网格）—— 3 个脚本**
+### 基线：造环境阶段定的，跟用哪种网络无关
+
+| 文件 | 干什么 |
+|---|---|
+| `play.py` | **你自己用键盘玩**。玩的是**原始游戏**，压根不碰网络 —— 用来验收「游戏本体对不对」 |
+| `random_baseline.py` | 随机策略（**地板线 0.16 豆**）|
+| `heuristic.py` | 两档手写规则 AI（**目标线 17.84 / 24.04 豆**）。PPO 必须打赢它。内部 import 了 `random_baseline.run_episodes` |
+
+### ⚠️ 一个文件两种身份：`ppo.py`
+
+| 身份 | 内容 | 谁在用 |
+|---|---|---|
+| **特征版的训练脚本** | `python ppo.py --deep --tail` | 命令行直接跑 |
+| **共用模块** | `PPOActorCritic` / `collect_trajectories` / `compute_gae_multi` / `ppo_update` / `eval_detail` / `load_for_view` | **`e2e.py`（端到端训练）· `watch.py` · `record.py`** |
+
+> 这是它最容易看错的地方 —— 名字像是「特征版专属」，其实**端到端的算法一行副本都没有，全从它 import**。
+
+### 网格表示层：只有端到端用
 
 | 文件 | 干什么 |
 |---|---|
@@ -584,14 +613,21 @@ uv run python watch.py snake_e2e_mlp.pth                    # 看端到端模型
 | **`e2e.py`** | **端到端训练脚本**。算法全从 `ppo.py` import，**只换了输入的样子** |
 | **`probe_cnn.py`** | **探针** —— 冻住训好的 CNN，从中间层 128 维回归「还剩多少空格」「追不追得到尾巴」等量，再做**投影消融**看它是不是真在用。默认读 `snake_e2e_cnn.pth`、跑 260 局 |
 
-**③ 两边共用 —— 2 个脚本**
+### 两种表示都认
 
 | 文件 | 干什么 |
 |---|---|
-| `watch.py` | 开窗口实时看（右侧数据面板：局数 / 长度 / 死因累计 / 最近 12 局柱状图）。**自动认特征版还是网格版** |
+| `watch.py` | 开窗口实时看（右侧数据面板：局数 / 长度 / 死因累计 / 最近 12 局柱状图）。**靠 `ppo.load_for_view` 自动认出特征版还是网格版** |
 | `record.py` | 不开窗口，扫 60 局挑最好的一局拼成胶片图 |
 
-**④ 训练产物（`.pth`，`*.pth` 在 `.gitignore` 里，不入库）**
+> **那「特征版的表示层」在哪个文件？—— 没有单独的文件，它就在 `snake_env.py` 的 `obs` 里。**
+> `snake_env` 直接吐 12 / 15 / 18 维数字，网络是 `ppo.py` 里的 `PPOActorCritic`。
+> 网格版之所以要多出个 `e2e_grid.py`，是因为它得**在外面套一层 wrapper 把 obs 换掉**，
+> 而 `snake_env.py` 不许动。
+
+### 训练产物（`.pth`）
+
+> `*.pth` 在 `.gitignore` 里，**不入库** —— 重跑一遍就有，不用占仓库。
 
 | 文件 | 是什么 |
 |---|---|
@@ -600,7 +636,7 @@ uv run python watch.py snake_e2e_mlp.pth                    # 看端到端模型
 | `snake_e2e_mlp.pth` | 端到端 MLP 版（33.24 豆）|
 | `snake_e2e_cnn.pth` | 端到端 CNN 版（50.82 豆）。`probe_cnn.py` 默认读它 |
 
-**⑤ 图片**
+### 图片
 
 | 文件 | 是什么 |
 |---|---|
@@ -612,7 +648,7 @@ uv run python watch.py snake_e2e_mlp.pth                    # 看端到端模型
 
 > 前两张胶片图由 `record.py` 生成；`fig_*.png` 是画文章配图的脚本一次性产出的，**生成脚本没有固化**（`pygame` 手绘，改配色要重跑）。
 
-**⑥ 三份文档，给谁看**
+### 三份文档，给谁看
 
 | 文件 | 给谁看 |
 |---|---|
@@ -620,7 +656,7 @@ uv run python watch.py snake_e2e_mlp.pth                    # 看端到端模型
 | `用强化学习通关贪食蛇.md` | **文章** —— 三种方案的对比，写给外人看，**不含过程和翻车** |
 | `EXPERIMENT.md` | **实验记录** —— 全过程时间线 + 预期 vs 结果，写给自己的，**专门保留翻车** |
 
-**⑦ 其他**
+### 其他
 
 | 文件 | 干什么 |
 |---|---|
