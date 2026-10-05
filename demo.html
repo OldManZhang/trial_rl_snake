@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>贪吃蛇 · 双边对照</title>
+<style>
+  :root{
+    --bg:#0d1017; --panel:#161a22; --line:#2c3340; --line-soft:#222835;
+    --fg:#e8ecf4; --muted:#808b9e; --faint:#5a6478;
+    --feat:#96f0af; --cnn:#6fb4ec; --mlp:#b9a0e8; --warn:#ecac4a;
+    --sans:system-ui,-apple-system,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    color-scheme:dark;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:20px 16px 40px;
+    background:var(--bg); color:var(--fg);
+    font:14px/1.5 var(--sans);
+    -webkit-font-smoothing:antialiased;
+  }
+  header{max-width:1000px; margin:0 auto 16px}
+  h1{margin:0 0 4px; font-size:19px; font-weight:650; letter-spacing:.2px}
+  .sub{color:var(--muted); font-size:13px}
+  .sub code{font:12px var(--mono); color:var(--faint); background:var(--panel);
+            padding:1px 6px; border-radius:5px}
+
+  /* ---- 控制条 ---- */
+  .bar{
+    max-width:1000px; margin:0 auto 18px;
+    display:flex; flex-wrap:wrap; align-items:center; gap:10px;
+    padding:10px 12px; background:var(--panel);
+    border:1px solid var(--line-soft); border-radius:12px;
+  }
+  button{
+    font:inherit; font-size:13px; color:var(--fg);
+    background:#1e242f; border:1px solid var(--line);
+    padding:6px 14px; border-radius:8px; cursor:pointer;
+    transition:background .12s, border-color .12s;
+  }
+  button:hover{background:#262e3b; border-color:#3a4354}
+  button:active{transform:translateY(1px)}
+  button.primary{background:#1c3a2a; border-color:#2f6b4a; color:var(--feat)}
+  button.primary:hover{background:#22492f}
+  .spd{display:flex; align-items:center; gap:8px; color:var(--muted); font-size:13px;
+       margin-left:auto}
+  .spd input{width:130px; accent-color:var(--feat)}
+  .spd b{color:var(--fg); font-variant-numeric:tabular-nums; min-width:2.3em;
+         display:inline-block; text-align:right}
+
+  /* ---- 面板 ---- */
+  main{
+    max-width:1000px; margin:0 auto;
+    display:grid; grid-template-columns:repeat(2,1fr); gap:16px;
+    align-items:start;
+  }
+  @media (max-width:760px){ main{grid-template-columns:1fr} }
+
+  .panel{
+    background:var(--panel); border:1px solid var(--line-soft);
+    border-top:2px solid var(--accent);
+    border-radius:12px; padding:14px;
+    display:flex; flex-direction:column; gap:12px;
+  }
+  .phead{display:flex; align-items:center; gap:10px}
+  .dot{width:9px; height:9px; border-radius:50%; background:var(--accent); flex:none}
+  .pname{font-weight:620; font-size:14.5px}
+  .psub{color:var(--faint); font-size:12px; font-family:var(--mono)}
+  .pscore{margin-left:auto; text-align:right; line-height:1}
+  .pscore b{font-size:30px; font-weight:680; color:var(--accent);
+            font-variant-numeric:tabular-nums}
+  .pscore span{font-size:11px; color:var(--faint); margin-left:4px}
+
+  canvas{width:100%; aspect-ratio:1; display:block; border-radius:10px}
+
+  .hunger{height:4px; background:#1e242f; border-radius:3px; overflow:hidden}
+  .hunger i{display:block; height:100%; width:0; background:var(--accent);
+            border-radius:3px; transition:width .1s linear}
+  .hunger.hot i{background:var(--warn)}
+
+  .stats{display:grid; grid-template-columns:repeat(4,1fr); gap:8px; text-align:center}
+  .stats>div{background:#12161e; border-radius:8px; padding:7px 4px}
+  .stats span{display:block; font-size:11px; color:var(--faint); margin-bottom:2px}
+  .stats b{font-size:14px; font-weight:600; font-variant-numeric:tabular-nums}
+
+  .cum{
+    display:flex; flex-wrap:wrap; gap:6px 16px;
+    padding-top:10px; border-top:1px solid var(--line-soft);
+    color:var(--muted); font-size:12.5px;
+  }
+  .cum b{color:var(--fg); font-variant-numeric:tabular-nums}
+  .cum .home b{color:var(--feat)}
+
+  footer{max-width:1000px; margin:22px auto 0; color:var(--faint); font-size:12.5px;
+         line-height:1.7; border-top:1px solid var(--line-soft); padding-top:14px}
+  footer code{font-family:var(--mono); color:var(--muted)}
+  .dead{position:fixed; inset:0; display:none}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>用强化学习通关贪吃蛇 · 双模型对照</h1>
+  <div class="sub">
+    第 <b id="round">–</b> 局 · 种子 <code id="seed">–</code> ·
+    两边从<b>同一盘开局</b>出发，之后各自发展
+  </div>
+</header>
+
+<div class="bar">
+  <button id="b-new" class="primary">新棋局</button>
+  <button id="b-toggle">暂停</button>
+  <button id="b-step">单步</button>
+  <div class="spd">
+    速度 <input id="speed" type="range" min="1" max="60" value="15">
+    <b id="spd-v">15</b> 步/秒
+  </div>
+</div>
+
+<main id="panels"></main>
+
+<footer>
+  <b>这里没有重新实现任何东西。</b>
+  网页只负责画 —— 环境是 <code>snake_env.py</code>，模型是 <code>snake_both.pth</code> 和
+  <code>snake_e2e_cnn.pth</code>，都由本地 Python 现算现发。
+  画面上看到的，就是终测 <b>59.12</b> 和 <b>50.82</b> 的那两个模型在玩。<br>
+  蛇头最亮、带眼睛（眼睛朝哪就往哪走）；身体从浅绿渐变到暗青（浅的那头是头）；
+  尾巴是<b style="color:#ecac4a">橙色</b>，一眼能挑出来。
+</footer>
+
+<script>
+"use strict";
+
+/* ============ 配色（跟 snake_env.py 的渲染对齐）============ */
+const C = {
+  head:     [150,240,175],
+  bodyNear: [104,204,138],
+  bodyFar:  [ 40,104, 92],
+  tail:     [236,172, 74],
+  eye:      [ 14, 18, 24],
+  food:     [240,110,110],
+};
+const ACCENT = { feat:"#96f0af", cnn:"#6fb4ec", mlp:"#b9a0e8" };
+const rgb  = a => `rgb(${a[0]},${a[1]},${a[2]})`;
+const lerp = (a,b,t) => a.map((v,i) => Math.round(v + (b[i]-v)*t));
+/* 和 snake_env.turn_right 一致： (dr,dc) → (dc,-dr) */
+const turnRight = d => [d[1], -d[0]];
+
+/* ============ 建面板（几边都行，现在配的是 2）============ */
+let panels = {}, N = 8, lastRound = -1;
+
+function build(sides){
+  const main = document.getElementById("panels");
+  main.innerHTML = ""; panels = {};
+  for (const s of sides){
+    const el = document.createElement("section");
+    el.className = "panel";
+    el.style.setProperty("--accent", ACCENT[s.key] || "#96f0af");
+    el.innerHTML = `
+      <div class="phead">
+        <span class="dot"></span>
+        <div><div class="pname"></div><div class="psub"></div></div>
+        <div class="pscore"><b class="v-score">0</b><span>豆</span></div>
+      </div>
+      <canvas></canvas>
+      <div class="hunger"><i></i></div>
+      <div class="stats">
+        <div><span>步数</span><b class="v-steps">0</b></div>
+        <div><span>长度</span><b class="v-len">3</b></div>
+        <div><span>饥饿</span><b class="v-hunger">0</b></div>
+        <div><span>死因</span><b class="v-death">—</b></div>
+      </div>
+      <div class="cum">
+        <span>打了 <b class="v-games">0</b> 局</span>
+        <span>均分 <b class="v-avg">–</b></span>
+        <span>最好 <b class="v-best">–</b></span>
+        <span class="home">打满 <b class="v-home">0</b></span>
+      </div>`;
+    el.querySelector(".pname").textContent = s.name;
+    el.querySelector(".psub").textContent  = s.subtitle;
+    main.appendChild(el);
+    panels[s.key] = el;
+  }
+}
+
+/* ============ 画一盘 ============ */
+function draw(cv, s){
+  const ctx = cv.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const css = cv.clientWidth || 320;
+  const px  = Math.round(css * dpr);
+  if (cv.width !== px){ cv.width = cv.height = px; }
+
+  const pad  = px * 0.014;
+  const cell = (px - pad * 2) / N;
+
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle = "#0a0d13";  ctx.fillRect(0, 0, px, px);
+
+  // 格子底
+  ctx.fillStyle = "#1b2130";
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++){
+    roundRect(ctx, pad + c*cell + 1, pad + r*cell + 1, cell - 2, cell - 2, cell*0.16);
+    ctx.fill();
+  }
+
+  // 豆
+  if (s.food){
+    ctx.fillStyle = rgb(C.food);
+    ctx.beginPath();
+    ctx.arc(pad + s.food[1]*cell + cell/2, pad + s.food[0]*cell + cell/2, cell*0.24, 0, 7);
+    ctx.fill();
+  }
+
+  // 蛇：从尾画到头，头压在最上面
+  const n = s.snake.length;
+  for (let i = n - 1; i >= 0; i--){
+    const [r, c] = s.snake[i];
+    let col, inset;
+    if (i === 0)          { col = C.head; inset = cell * 0.05; }
+    else if (i === n - 1) { col = C.tail; inset = cell * 0.15; }
+    else {
+      const t = Math.min(1, Math.max(0, (i - 1) / Math.max(n - 3, 1)));
+      col = lerp(C.bodyNear, C.bodyFar, t);
+      inset = cell * (0.05 + 0.075 * t);
+    }
+    ctx.fillStyle = rgb(col);
+    roundRect(ctx, pad + c*cell + inset, pad + r*cell + inset,
+                   cell - inset*2, cell - inset*2, cell*0.18);
+    ctx.fill();
+  }
+
+  // 眼睛（朝哪走看这里）
+  if (n){
+    const [hr, hc] = s.snake[0], d = s.direction, rd = turnRight(d);
+    const cx = pad + hc*cell + cell/2, cy = pad + hr*cell + cell/2;
+    const fx = cx + d[1]*cell*0.20,   fy = cy + d[0]*cell*0.20;
+    ctx.fillStyle = rgb(C.eye);
+    for (const sg of [1, -1]){
+      ctx.beginPath();
+      ctx.arc(fx + rd[1]*sg*cell*0.175, fy + rd[0]*sg*cell*0.175, cell*0.075, 0, 7);
+      ctx.fill();
+    }
+  }
+
+  // 结束了压一层
+  if (s.done){
+    ctx.fillStyle = "rgba(10,13,19,.74)";
+    ctx.fillRect(0, 0, px, px);
+    ctx.fillStyle = (s.death || "").includes("填满") ? "#96f0af" : "#ecac4a";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.font = `600 ${px*0.072}px var(--sans), system-ui, "PingFang SC", sans-serif`;
+    ctx.fillText(s.death || "结束", px/2, px/2);
+  }
+}
+
+function roundRect(ctx, x, y, w, h, r){
+  r = Math.min(r, w/2, h/2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y,     x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x,     y + h, r);
+  ctx.arcTo(x,     y + h, x,     y,     r);
+  ctx.arcTo(x,     y,     x + w, y,     r);
+  ctx.closePath();
+}
+
+/* ============ 渲染一帧 ============ */
+function render(st){
+  N = st.board || 8;
+  if (st.round !== lastRound || Object.keys(panels).length !== st.sides.length){
+    lastRound = st.round;
+  }
+  if (Object.keys(panels).length !== st.sides.length) build(st.sides);
+
+  document.getElementById("round").textContent = st.round;
+  document.getElementById("seed").textContent  = st.seed;
+  document.getElementById("b-toggle").textContent = st.running ? "暂停" : "继续";
+
+  for (const s of st.sides){
+    const el = panels[s.key];
+    if (!el) continue;
+    const q = sel => el.querySelector(sel);
+    draw(el.querySelector("canvas"), s);
+
+    q(".v-score").textContent = s.score;
+    q(".v-steps").textContent = s.steps;
+    q(".v-len").textContent   = s.length;
+    q(".v-hunger").textContent = s.hunger;
+    q(".v-death").textContent = s.death || "—";
+    q(".v-death").style.color = s.done ? "#ecac4a" : "";
+
+    const hp = Math.min(1, s.hunger / (s.max_hunger || 100));
+    const bar = q(".hunger");
+    bar.querySelector("i").style.width = (hp * 100) + "%";
+    bar.classList.toggle("hot", hp > 0.7);
+
+    q(".v-games").textContent = s.games;
+    q(".v-avg").textContent   = s.avg == null ? "–" : s.avg;
+    q(".v-best").textContent  = s.best == null ? "–" : s.best;
+    q(".v-home").textContent  = s.home;
+  }
+}
+
+/* ============ 和服务端说话 ============ */
+async function poll(){
+  try {
+    const r = await fetch("/state", { cache:"no-store" });
+    if (r.ok) render(await r.json());
+  } catch (e){ /* 服务停了就静静等着 */ }
+}
+
+async function cmd(body){
+  try {
+    const r = await fetch("/cmd", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (r.ok) render(await r.json());
+  } catch (e){}
+}
+
+document.getElementById("b-new").onclick    = () => cmd({cmd:"new"});
+document.getElementById("b-toggle").onclick = () => cmd({cmd:"toggle"});
+document.getElementById("b-step").onclick   = () => cmd({cmd:"step"});
+
+const sp = document.getElementById("speed");
+sp.oninput = () => {
+  document.getElementById("spd-v").textContent = sp.value;
+  cmd({cmd:"speed", value:+sp.value});
+};
+
+/* 空格 = 暂停/继续，N = 新棋局，→ = 单步 */
+addEventListener("keydown", e => {
+  if (e.code === "Space"){ e.preventDefault(); cmd({cmd:"toggle"}); }
+  if (e.key  === "n" || e.key === "N") cmd({cmd:"new"});
+  if (e.key  === "ArrowRight") cmd({cmd:"step"});
+});
+
+poll();
+setInterval(poll, 50);
+</script>
+</body>
+</html>
