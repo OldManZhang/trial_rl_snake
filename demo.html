@@ -43,6 +43,15 @@
   button:active{transform:translateY(1px)}
   button.primary{background:#1c3a2a; border-color:#2f6b4a; color:var(--feat)}
   button.primary:hover{background:#22492f}
+  button:disabled{opacity:.35; cursor:default}
+  button:disabled:hover{background:#1e242f; border-color:var(--line)}
+  button:disabled:active{transform:none}
+  /* 两边都完了 → 新棋盘发光，提示"下一步点这里" */
+  @keyframes attn{
+    0%,100%{box-shadow:0 0 0 0 rgba(150,240,175,0)}
+    50%    {box-shadow:0 0 0 6px rgba(150,240,175,.16)}
+  }
+  button.primary.attn{animation:attn 1.3s ease-in-out infinite}
   .spd{display:flex; align-items:center; gap:8px; color:var(--muted); font-size:13px;
        margin-left:auto}
   .spd input{width:130px; accent-color:var(--feat)}
@@ -109,7 +118,7 @@
 </header>
 
 <div class="bar">
-  <button id="b-new" class="primary">新棋局</button>
+  <button id="b-new" class="primary">新棋盘</button>
   <button id="b-toggle">暂停</button>
   <button id="b-step">单步</button>
   <div class="spd">
@@ -123,9 +132,10 @@
 <footer>
   <b>这里没有重新实现任何东西。</b>
   网页只负责画 —— 环境是 <code>snake_env.py</code>，模型是 <code>snake_both.pth</code> 和
-  <code>snake_e2e_cnn.pth</code>，都由本地 Python 现算现发。
-  画面上看到的，就是终测 <b>59.12</b> 和 <b>50.82</b> 的那两个模型在玩。<br>
-  <b>均分怎么算的：</b>只有<b>两边都打完</b>的那一盘才记分 —— 中途按「新棋局」时两边都不记，
+  <code>snake_e2e_cnn.pth</code>，都由本地 Python 现算现发。<br>
+  <b>纯 CNN 那边，是同一个 PPO 训练了 <b>12,800 局</b>（400 轮 × 32 局）训出来的</b> ——
+  先验规则那边同样 12,800 局，两边只有「喂进去什么」不一样。<br>
+  <b>均分怎么算的：</b>只有<b>两边都打完</b>的那一盘才记分 —— 中途按「新棋盘」时两边都不记，
   所以两边的「打完 N 局」永远一样多，均分才可比。<br>
   蛇头最亮、带眼睛（眼睛朝哪就往哪走）；身体从浅绿渐变到暗青（浅的那头是头）；
   尾巴是<b style="color:#ecac4a">橙色</b>，一眼能挑出来。
@@ -278,7 +288,15 @@ function render(st){
 
   document.getElementById("round").textContent = st.round;
   document.getElementById("seed").textContent  = st.seed;
-  document.getElementById("b-toggle").textContent = st.running ? "暂停" : "继续";
+
+  // 两边都完了 → 服务端停住不再推进（不自动开下一盘）。
+  // 这时「继续」没有意义（两边都死了），禁掉它，让「新棋盘」发光。
+  const over = st.sides.every(s => s.done);
+  const bTog = document.getElementById("b-toggle");
+  bTog.textContent = st.running ? "暂停" : "继续";
+  bTog.disabled = over;
+  document.getElementById("b-step").disabled = over;
+  document.getElementById("b-new").classList.toggle("attn", over);
 
   for (const s of st.sides){
     const el = panels[s.key];

@@ -46,7 +46,7 @@ REASON_CN = {"wall": "撞墙", "self": "咬到自己", "starve": "饿死", "win"
 
 # 左 / 右。想换成 ③ 纯 MLP 做三方对照，这里加一行就行。
 SIDES = [
-    ("feat", "先验规则 + MLP", "18 个数字（人算的）", "snake_both.pth"),
+    ("feat", "先验规则 + MLP", "6 个基础维度 + 12 个先验规则", "snake_both.pth"),
     ("cnn", "纯 CNN", "(4, 8, 8) 原始网格", "snake_e2e_cnn.pth"),
 ]
 
@@ -159,7 +159,6 @@ class Arena:
         self.seed = 0
         self.round = 0
         self.lock = threading.Lock()
-        self._rest_until = None   # 两边都死了 → 停一会儿再开新局
 
         self._new_board_locked()
         threading.Thread(target=self._loop, daemon=True).start()
@@ -183,9 +182,14 @@ class Arena:
             s.reset(self.seed)
 
     def new_board(self):
+        """人工点「新棋局」才走这儿。
+
+        顺便把 running 打开 —— 两边打完时 _loop 会自动暂停（见那儿），
+        这时点「新棋局」的意图显然是「再来一盘」，不该还要再点一次「继续」。
+        """
         with self.lock:
             self._new_board_locked()
-            self._rest_until = None
+            self.running = True
 
     def toggle(self):
         with self.lock:
@@ -212,17 +216,19 @@ class Arena:
                     time.sleep(0.05)
                     continue
 
+                for s in self.sides:
+                    s.step()
+
+                # ⭐ 两边都完了 —— 【停在这儿，不自动开下一盘】。
+                #    自动重开的话，刚看清"它是怎么死的"就被冲掉了，
+                #    而且两边谁先死谁后死也来不及比。等人工点「新棋盘」。
+                #
+                #    在【同一次迭代里】就置 False —— 拖到下一轮的话，
+                #    第二边刚死那一瞬间网页会看到 running=True（按钮显示"暂停"），
+                #    下一帧才纠正过来，白闪一下。
                 if all(s.done for s in self.sides):
-                    # 都完了 —— 停 1.5 秒让人看清怎么死的，再开新棋局
-                    if self._rest_until is None:
-                        self._rest_until = time.time() + 1.5
-                    elif time.time() >= self._rest_until:
-                        self._new_board_locked()
-                        self._rest_until = None
-                else:
-                    self._rest_until = None
-                    for s in self.sides:
-                        s.step()
+                    self.running = False
+                    continue
 
                 speed = self.speed
 
