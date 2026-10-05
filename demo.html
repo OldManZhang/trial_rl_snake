@@ -324,16 +324,25 @@ function render(st){
 }
 
 /* ============ 和服务端说话 ============ */
+/* 用【相对路径】—— 本地页面在 / 下，fetch("state") 就打到 /state；
+   线上页面在 /playgrounds/snake/ 下，同一个 fetch("state") 打到
+   /playgrounds/snake/state。两边一份代码，不用改。
+
+   ⚠️ 前提：页面地址【带结尾斜杠】。不带的话（/playgrounds/snake）
+      浏览器会把 "snake" 当文件名，相对路径就少一层，打到 /playgrounds/state 去了。
+      Caddy 的 file_server 遇到目录会自动 301 补上斜杠，所以这点不用额外处理。
+   ⚠️ 也别写死成 "/state" —— 那是绝对路径，放到子路径下会打到域名根目录。 */
+
 async function poll(){
   try {
-    const r = await fetch("/state", { cache:"no-store" });
+    const r = await fetch("state", { cache:"no-store" });
     if (r.ok) render(await r.json());
-  } catch (e){ /* 服务停了就静静等着 */ }
+  } catch (e){ /* 服务还没起来 / 正在唤醒，静静等着下一轮 */ }
 }
 
 async function cmd(body){
   try {
-    const r = await fetch("/cmd", {
+    const r = await fetch("cmd", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

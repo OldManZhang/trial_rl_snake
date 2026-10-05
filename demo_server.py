@@ -42,6 +42,11 @@ from ppo import load_for_view
 HOST, PORT = "127.0.0.1", 8770
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# 多久没人访问就自动暂停。
+# 本地无感；线上很重要 —— 没人看的时候不该让 4 个核继续跑两个模型。
+# （再往后由 systemd 的 IdleTimeoutSec 直接把进程杀掉，内存也还回去。）
+IDLE_PAUSE = 30.0
+
 REASON_CN = {"wall": "撞墙", "self": "咬到自己", "starve": "饿死", "win": "填满整盘！"}
 
 # 左 / 右。想换成 ③ 纯 MLP 做三方对照，这里加一行就行。
@@ -160,6 +165,9 @@ class Arena:
         self.round = 0
         self.lock = threading.Lock()
 
+        self.last_seen = time.time()   # 最近一次有人访问
+        self.auto_paused = False       # 是"没人看所以暂停"还是"用户手动暂停"
+
         self._new_board_locked()
         threading.Thread(target=self._loop, daemon=True).start()
 
@@ -181,8 +189,22 @@ class Arena:
         for s in self.sides:
             s.reset(self.seed)
 
+    def touch(self):
+        """每个 HTTP 请求都调一次 —— 记下"有人在看"，并把自动暂停解除掉。
+
+        ⚠️ 只解除【自动】暂停。用户自己按的暂停不能被一个轮询偷偷打开，
+           不然他按了暂停、页面每 50ms 轮询一次，等于没按。
+        """
+        with self.lock:
+            self.last_seen = time.time()
+            if self.auto_paused:
+                self.auto_paused = False
+                # 两边都死了就别"恢复"了 —— 恢复也没得跑，只会把按钮闪一下
+                if not all(s.done for s in self.sides):
+                    self.running = True
+
     def new_board(self):
-        """人工点「新棋局」才走这儿。
+        """人工点「新棋盘」才走这儿。
 
         顺便把 running 打开 —— 两边打完时 _loop 会自动暂停（见那儿），
         这时点「新棋局」的意图显然是「再来一盘」，不该还要再点一次「继续」。
@@ -216,6 +238,13 @@ class Arena:
                     time.sleep(0.05)
                     continue
 
+                # 没人看就先停 —— 线上别让两个模型空转。
+                # 注意顺序：放在 step 之前，停了这一次就不再往下走。
+                if self.running and time.time() - self.last_seen > IDLE_PAUSE:
+                    self.running = False
+                    self.auto_paused = True
+                    continue
+
                 for s in self.sides:
                     s.step()
 
@@ -235,6 +264,18 @@ class Arena:
             time.sleep(1.0 / speed)
 
     # --------------------------------------------------------
+    def health(self):
+        """只读，不改任何状态。给监控和排查用。"""
+        with self.lock:
+            return {
+                "running": self.running,
+                "auto_paused": self.auto_paused,
+                "idle_seconds": round(time.time() - self.last_seen, 1),
+                "idle_pause_after": IDLE_PAUSE,
+                "round": self.round,
+                "all_done": all(s.done for s in self.sides),
+            }
+
     def snapshot(self):
         with self.lock:
             return {
@@ -270,13 +311,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith("/state"):
+            ARENA.touch()
             return self._json(ARENA.snapshot())
+        if self.path.startswith("/health"):
+            # ⚠️ 故意【不调 touch()】—— 这是个纯观察窗口。
+            #    /state 一进来就 touch（=有人在看，快醒来），所以【没法用它观察
+            #    "空闲暂停"到底有没有生效】—— 它自己会把自己叫醒。
+            #    排查问题时看这个，它不改变任何状态。
+            return self._json(ARENA.health())
         if self.path in ("/", "/index.html"):
+            # 线上这一步其实轮不到 —— Caddy 会把 demo.html 当静态文件直接发，
+            # 只有本地开发（和 handle_path 之外的情况）才走这儿。
             with open(os.path.join(HERE, "demo.html"), "rb") as f:
                 return self._send(200, f.read(), "text/html; charset=utf-8")
         self.send_error(404)
 
     def do_POST(self):
+        ARENA.touch()
         n = int(self.headers.get("Content-Length") or 0)
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
@@ -298,6 +349,28 @@ class Handler(BaseHTTPRequestHandler):
         self._json(ARENA.snapshot())
 
 
+def systemd_socket():
+    """如果是被 systemd 的 .socket 单元拉起来的，就把那个监听 fd 接过来。
+
+    没有（本地直接跑）就返回 None，走自己 bind 的老路。两边的代码完全一样。
+
+    原理：systemd 先建好监听 socket，第一个连接进来时才启动本进程，
+    并把 fd 3 传下来。所以"服务没在跑"的时候，端口依然是有人接的 ——
+    访客不会 connection refused，只是要多等几秒（等我们 import torch）。
+
+    ⚠️ LISTEN_PID 必须等于自己的 pid。systemd 靠这个防止子进程
+       误用父进程继承来的 fd（`sd_listen_fds` 的第一条规矩）。
+    ⚠️ fd 号永远从 3 开始（0/1/2 是 stdin/out/err）。
+    """
+    if os.environ.get("LISTEN_PID") != str(os.getpid()):
+        return None
+    n = int(os.environ.get("LISTEN_FDS") or 0)
+    if n < 1:
+        return None
+    import socket as _socket
+    return _socket.fromfd(3, _socket.AF_INET, _socket.SOCK_STREAM)
+
+
 def main():
     global ARENA
 
@@ -312,11 +385,21 @@ def main():
 
     ARENA = Arena()
 
-    print(f"  → 浏览器打开   http://{HOST}:{PORT}", flush=True)
-    print("     （Ctrl+C 停）", flush=True)
+    sock = systemd_socket()
+    if sock is not None:
+        # 接 systemd 的 fd。bind_and_activate=False 是因为轮不到我们 bind/listen ——
+        # systemd 早就 listen 好了，我们只管 accept。
+        srv = ThreadingHTTPServer((HOST, PORT), Handler, bind_and_activate=False)
+        srv.socket.close()                 # 上面那行顺手建了个没用的 socket，关掉
+        srv.socket = sock
+        srv.server_address = sock.getsockname()
+        print(f"  （由 systemd socket 激活启动，fd 3 = {srv.server_address}）", flush=True)
+        print("   → 线上由 Caddy 转进来", flush=True)
+    else:
+        srv = ThreadingHTTPServer((HOST, PORT), Handler)
+        print(f"  → 浏览器打开   http://{HOST}:{PORT}", flush=True)
     print("=" * 62, flush=True)
 
-    srv = ThreadingHTTPServer((HOST, PORT), Handler)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
