@@ -382,23 +382,29 @@ function render(st){
      快（<600ms）  按钮变灰 + 控制条上转圈 —— 点下去立刻知道"收到了"
      慢（>600ms）  亮遮罩"正在唤醒模型…" —— 明确告诉他在等什么
    连失败 3 次也亮遮罩（进程还没起来时，前几次 fetch 必然失败）。 */
-let reqDepth = 0;      // 有几个请求在飞（>0 就转圈 + 禁按钮）
+let uiDepth = 0;       // 有几个【用户点的】请求在飞（>0 才转圈 + 禁按钮）
 let slowN = 0;         // 有几个请求已经超过 600ms 还没回来
 let failures = 0;      // 连续失败了几次
 
 const wakeEl = () => document.getElementById("wake");
 
 /* ⚠️ 遮罩的显示必须【集中算】，不能让每个请求各管各的。
-   踩过的坑：轮询每 50ms 成功一次，每次都写 wake.hidden = true ——
+   踩过的坑一：轮询每 50ms 成功一次，每次都写 wake.hidden = true ——
    把那个慢请求（点「新棋盘」）刚刚点亮的遮罩又按回去了。
    所以做成计数：只要还有慢的、或者连续失败够多，就亮着。 */
 function syncWake(){
   wakeEl().hidden = !(slowN > 0 || failures >= 3);
 }
 
-async function api(path, opts){
-  reqDepth++;
-  document.body.classList.add("busy");
+/* ⚠️ 踩过的坑二（线上才暴露出来）：busy 一开始对【每个】请求都设，
+   包括每 50ms 一次的轮询。而 busy 会让按钮 pointer-events:none ——
+   于是按钮一直在闪，**点下去经常被吃掉**（线上延迟高，空隙更小）。
+   本机快到有空隙，恰好没测出来。
+
+   所以加了 ui 参数：【只有用户点的】才禁按钮。轮询该干嘛干嘛，
+   它只参与 slowN / failures（那两条本来就该反映真实健康度）。 */
+async function api(path, opts, ui = false){
+  if (ui){ uiDepth++; document.body.classList.add("busy"); }
 
   let isSlow = false;
   const slow = setTimeout(() => { isSlow = true; slowN++; syncWake(); }, 600);
@@ -415,7 +421,7 @@ async function api(path, opts){
   } finally {
     clearTimeout(slow);
     if (isSlow) slowN--;
-    if (--reqDepth === 0) document.body.classList.remove("busy");
+    if (ui && --uiDepth === 0) document.body.classList.remove("busy");
     syncWake();
   }
 }
@@ -430,7 +436,7 @@ async function cmd(body){
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    }));
+    }, true));   // ← ui=true：这是用户点的，要禁按钮 + 转圈
   } catch (e){ /* 遮罩已经亮了，用户知道在等 */ }
 }
 
