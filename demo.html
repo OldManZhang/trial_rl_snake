@@ -354,7 +354,8 @@ function render(st){
 
    ⚠️ 前提：页面地址【带结尾斜杠】。不带的话（/playgrounds/snake）
       浏览器会把 "snake" 当文件名，相对路径就少一层，打到 /playgrounds/state 去了。
-      Caddy 的 file_server 遇到目录会自动 301 补上斜杠，所以这点不用额外处理。
+      线上由 Caddy 一条 redir 保证（见 deploy/snake.caddyfile）—— 因为是反代，
+      静态文件服务器那种"遇到目录自动 301 补斜杠"的行为在这里不会发生。
    ⚠️ 也别写死成 "/state" —— 那是绝对路径，放到子路径下会打到域名根目录。 */
 
 let ready = false;     // 有没有成功拿到过一次 state
