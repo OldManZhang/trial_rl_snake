@@ -54,7 +54,9 @@ import numpy as np
 import torch
 
 from snake_env import SnakeEnv, W, MAX_HUNGER, UP, RIGHT, DOWN, LEFT
-from e2e_grid import GridObs, GridActorCritic, N_CH
+from models.cnn import GridObs, GridActorCritic, N_CH
+from models.feature import FeatObs
+import models
 
 CKPT = sys.argv[1] if len(sys.argv) > 1 else "snake_e2e_cnn.pth"
 N_GAMES = int(sys.argv[2]) if len(sys.argv) > 2 else 260
@@ -126,21 +128,23 @@ def graph_stats(env):
 # ============================================================
 def collect(model, n_games):
     """跑若干局，每步记下 (CNN 激活, 原始网格, 特征真值, 新量真值, 局号)"""
-    # ⚠️ 内层把三个特征开关全打开 —— 但【只用来当真值】，不喂给 CNN
-    env = GridObs(SnakeEnv(use_space=True, use_deep=True, use_tail=True))
+    # ⭐ wrapper 可以【套娃】：GridObs 套在 FeatObs 外面。
+    #    网格是 CNN 看到的输入，特征版那 18 维是【真值】—— 不喂给 CNN。
+    #    （GridObs 要的 env.snake / env.W 会一路穿透两层 wrapper 拿到真环境。）
+    env = GridObs(FeatObs(SnakeEnv(), use_space=True, use_deep=True, use_tail=True))
     acts, grids, feats, news, gids = [], [], [], [], []
 
     for g in range(n_games):
         obs, _ = env.reset(seed=1000 + g)
         while True:
             grid = env._grid()                     # CNN 看到的 (4,8,8)
-            feat = env.env._get_obs()              # 18 维真值（含 BFS）
+            feat = env.env.current_obs()           # 18 维真值（含 BFS）
             with torch.no_grad():
                 h = model.actor_body(torch.as_tensor(grid).unsqueeze(0))
             acts.append(h.squeeze(0).numpy())
             grids.append(grid.ravel())
             feats.append(feat)
-            news.append(graph_stats(env.env))
+            news.append(graph_stats(env))
             gids.append(g)
 
             with torch.no_grad():
@@ -221,7 +225,7 @@ def mlp_r2(Xtr, ytr, Xte, yte, epochs=400, hidden=96, seed=0):
 # ============================================================
 def play_ablated(model, w_hat, episodes=ABLATE_EPISODES, seed=777):
     """贪心玩若干局，返回平均豆数。w_hat=None 表示不消融。"""
-    env = GridObs(SnakeEnv(**dict(use_space=False, use_deep=False, use_tail=False)))
+    env = GridObs(SnakeEnv())
     beans = []
     for i in range(episodes):
         obs, _ = env.reset(seed=seed + i)
@@ -246,15 +250,13 @@ if __name__ == "__main__":
     print("CNN 里装了什么知识 · 线性探针 + 投影消融")
     print("=" * 94)
 
-    env0 = GridObs(SnakeEnv(**dict(use_space=False, use_deep=False, use_tail=False)))
-    model = GridActorCritic(obs_shape=(N_CH, W, W), action_dim=3, hidden_size=128, arch="cnn")
+    # ⭐ 走注册表 —— 换模型不用改这里
     try:
-        ck = torch.load(CKPT, weights_only=True)
-    except FileNotFoundError:
+        env0, model, cfg = models.load_all(CKPT)
+    except SystemExit:
         sys.exit(f"❌ 找不到 {CKPT}")
-    model.load_state_dict(ck["state_dict"])
-    model.eval()
-    print(f"  模型 {CKPT}（{ck.get('arch')}，评估最好 {ck.get('eval_score', float('nan')):+.2f}）")
+    print(f"  模型 {CKPT}（{cfg['model']}/{cfg.get('arch', '-')}）")
+    print(f"  {models.describe(cfg)}")
     print()
 
     print(f"正在跑 {N_GAMES} 局收集激活…", flush=True)

@@ -34,12 +34,15 @@ uv run python record.py                       # 或者出一张胶片图，不�
 > 四个模型都在仓库里，一共 1.3 MB：`snake_both.pth` · `snake_long.pth` ·
 > `snake_e2e_mlp.pth` · `snake_e2e_cnn.pth`。不想下载就自己训 —— 见第二节。
 
-**只想花 17 秒看个大概**，就跑 12 维的快速版：
+**只想花 17 秒看个大概**，就跑 12 维的快速版 —— 注意要显式给 `--solve`：
 
 ```bash
-uv run python ppo.py                    # 约 17 秒，生成 snake_best.pth（12 维，23.7 个豆）
+uv run python train.py --model feature --solve 12   # 约 17 秒，生成 snake_best.pth（12 维，23.7 个豆）
 uv run python watch.py snake_best.pth
 ```
+
+> ⚠️ `train.py` 的 `--solve` 默认是 **100（不可达 = 不早停）** —— 因为要比几条腿的训练量，
+> 必须跑满预算。老的 `ppo.py` 默认是 12，那个是"看一眼"的用法，现在得自己写出来。
 
 窗口里留意三件事：
 
@@ -52,9 +55,13 @@ uv run python watch.py snake_best.pth
 ## 二、从零训练
 
 ```bash
-uv run python ppo.py                            # 12 维（约 17 秒）
-uv run python ppo.py --deep --tail --out snake_both.pth    # 18 维，最强那版（约 39 分钟）
+uv run python train.py --model feature --solve 12          # 12 维（约 17 秒，早停）
+uv run python train.py --model feature --deep --tail \
+                       --out snake_both.pth                # 18 维，最强那版（约 39 分钟）
 ```
+
+> ⚠️ 不写 `--solve` 的话默认是 **100（不可达 = 不早停）**，会跑满 400 批 ——
+> 做对照实验要的就是这个（几条腿的训练量必须一样）。只想快点看一眼就传 `--solve 12`。
 
 `--deep` / `--tail` / `--no-space` 三个开关**任意组合**，用来做状态特征的消融：
 
@@ -67,9 +74,11 @@ uv run python ppo.py --deep --tail --out snake_both.pth    # 18 维，最强那�
 | `--no-space` | 9 |
 
 > ⚠️ **`--deep` 和 `--tail` 都是 15 维，但特征顺序不同** ——
-> 所以 `ppo.py` 把环境配置和权重**存在同一个文件里**，
+> 所以 `train.py` 把环境配置和权重**存在同一个文件里**，
 > `watch.py` / `record.py` 读 checkpoint 自带的配置来建环境。
 > 光看维度猜是猜不出来的，猜错了不会报错，只会**静默玩得很烂**。
+>
+> 三个开关现在归 `models/feature.py` 的 `FeatObs` 管（以前长在 `SnakeEnv` 里）。
 
 ### ⭐ 四路特征消融（本机实测，终测 50 局）
 
@@ -148,7 +157,7 @@ collect_trajectories(...)    # 同上
 
 ### 状态（9 ~ 18 维，按开关拼装）
 
-**基础 9 维（永远都在）：**
+**基础 9 维（永远都在，由 `snake_env.py` 给）：**
 
 ```
 [0:3]  左 / 直 / 右 三格是什么    0=空  0.5=墙  1=身体
@@ -159,6 +168,10 @@ collect_trajectories(...)    # 同上
 [7]    当前长度 / (W*W)
 [8]    蛇头到蛇尾的曼哈顿距离 / (2(W-1))
 ```
+
+> ⚠️ 上面 9 维是**最低限度的编码**，只为让 gymnasium 的 `reset/step` 契约成立。
+> 真正"喂给网络什么"由 `models/` 里的 wrapper 决定 ——
+> `FeatObs` 往后**接上** BFS 那 9 维（→ 18），`GridObs` **扔掉**这 9 维重画成 `(4,8,8)`。
 
 **三组可选特征（每组 3 维，下标都和动作 0/1/2 一一对齐）：**
 
@@ -231,7 +244,8 @@ collect_trajectories(...)    # 同上
 
 **自写环境最大的特点是：gymnasium 本来帮你免掉的那些坑，现在全归你了 —— 而且都不报错。**
 
-每条都在 `snake_env.py` 的 `__main__` 里配了断言（**共 53 条**）。
+每条都在 `snake_env.py` 的 `__main__` 里配了断言（**44 条**，
+另外 `models/feature.py` 37 条 + `models/cnn.py` 59 条 + `algo.py` 16 条 + 注册表 17 条）。
 
 ### 坑 1 · 差点抄错的 `ret_scale`（最险的一个）
 
@@ -301,7 +315,7 @@ assert obs[4] == -1    # 左右：左边  ✅
 
 写达标线时如果不换算，会写出「10 分」其实是「11 个豆」这种线。
 
-✅ `ppo.py` 的打印里两个单位都写清楚，`info` 里带 `food_eaten` 和 `end_reason`。
+✅ `train.py` 的打印里两个单位都写清楚，`info` 里带 `food_eaten` 和 `end_reason`。
 
 ### 坑 7 · 界面文字全是豆腐块 `□□□`
 
@@ -431,12 +445,17 @@ uv run python watch.py [checkpoint]      # 不填就用 snake_both.pth
 
 ### 怎么做到不动 `snake_env.py`
 
-游戏本体已经过 53 条自测，是**冻结**的。表示层整个放进 `e2e_grid.py`，
+游戏本体是**冻结**的。表示层整个放在 `models/cnn.py`，
 用 `gym.ObservationWrapper` 在外面把观测换掉 —— **游戏规则保证没变**，
 对照才干净（同棋盘、同奖励、同算法，只换输入）。
 
 > ⚠️ 踩到的坑：gymnasium 的 Wrapper **不转发自定义属性**。
 > 不自己补 `__getattr__` 的话，`watch.py` 读 `env.W` / `env.snake` 会直接 AttributeError。
+
+> 📌 重构之后这条更彻底了：`GridObs` 走的那条路（**从 `env.snake` 重读状态、自己拼**）
+> 现在**两个模型都在走** —— `snake_env.py` 里已经**一条 BFS 都没有**，
+> 18 维先验特征整个搬进了 `models/feature.py`。
+> 判据：**加第 5 个模型时，`snake_env.py` 一个字都不用改。**
 
 ### 输入编码：4 张 8×8 的图，头永远朝上
 
@@ -569,10 +588,12 @@ minibatch 128 → 29.4s            minibatch 2048 → 27.8s      （步数少 16
 ### 怎么跑
 
 ```bash
-uv run python e2e_grid.py                                   # 表示层自测（48 条断言）
-uv run python e2e.py --smoke --arch mlp                     # 烟测（2 批）
-uv run python e2e.py --arch mlp --out snake_e2e_mlp.pth     # 训练 400 批，约 10 分钟
-uv run python e2e.py --arch cnn --out snake_e2e_cnn.pth     # 训练 400 批（实测 3.3 小时）
+uv run python models/cnn.py                                 # 网格表示层自测（59 条断言）
+uv run python train.py --model cnn --smoke                  # 烟测（2 批）
+uv run python train.py --model cnn --arch mlp \
+                       --out snake_e2e_mlp.pth              # 训练 400 批，约 10 分钟
+uv run python train.py --model cnn --arch cnn \
+                       --out snake_e2e_cnn.pth              # 训练 400 批（实测 3.3 小时）
 uv run python watch.py snake_e2e_mlp.pth                    # 看端到端模型自己玩
 ```
 
@@ -583,72 +604,120 @@ uv run python watch.py snake_e2e_mlp.pth                    # 看端到端模型
 ### 先看依赖关系
 
 ```
-snake_env.py ──── 游戏本体。下面【每一个】脚本都 import 它
-     │
-     ├─ ppo.py ─────────┬─ e2e.py          端到端训练：算法直接 import，没有副本
-     │  训练 + 共用模块   ├─ watch.py        两种表示都认
-     │                  └─ record.py
-     │
-     ├─ e2e_grid.py ────┬─ e2e.py
-     │  网格表示层       └─ probe_cnn.py    只对 CNN 做分析
-     │
-     ├─ play.py            你自己玩（原始游戏）
-     └─ random_baseline.py ── heuristic.py
+                    snake_env.py                游戏规则 + 渲染 + 字体
+                         │                      （只暴露 env.snake / .food / .direction
+                         │                        / .hunger / .W / simulate() / reachable()）
+      ┌──────────────────┼──────────────────┐
+      │                  │                  │
+models/feature.py   models/cnn.py       play.py            基线：
+FeatObs + MLP       GridObs + CNN       你自己玩            random_baseline.py
+      │                  │                                  heuristic.py
+      └────────┬─────────┘
+               │
+      models/__init__.py        ⭐ 注册表 —— 全仓库唯一认 checkpoint 的地方
+               │
+    ┌──────────┼──────────┬──────────────┐
+    │          │          │              │
+ train.py   watch.py   record.py   probe_cnn.py / demo_server.py
+
+                         algo.py     纯 PPO：采样 / GAE / update / 评估
+                                     （谁都不认，train.py 和 probe_cnn.py 用它）
 ```
+
+### 三层，各管各的
+
+| 层 | 文件 | 加第 5 个模型时要动吗 |
+|---|---|---|
+| **游戏** | `snake_env.py` | ❌ **一个字都不用改** ← 这是这次重构的验收标准 |
+| **模型** | `models/feature.py` · `models/cnn.py` | ✅ 加一个文件 |
+| **注册表** | `models/__init__.py` | ✅ 加一行 `REGISTRY` |
+| **算法** | `algo.py` | ❌ 不变 |
+| **流程** | `train.py` · `watch.py` · `record.py` · `probe_cnn.py` · `demo_server.py` | ❌ 不变 |
 
 ### 地层：谁都要
 
 | 文件 | 干什么 |
 |---|---|
-| **`snake_env.py`** | **游戏本体** —— Gymnasium 接口 + 渲染 + 字体 + **53 条自测**。**全部 8 个脚本都 import 它**，端到端那三个也不例外 |
+| **`snake_env.py`** | **游戏本体** —— Gymnasium 接口 + 渲染 + 字体 + **44 条自测**。**所有脚本都 import 它** |
+
+> ⚠️ 它现在**只管游戏**。以前那 18 维先验特征（3 组 BFS）、`use_space/use_deep/use_tail`
+> 三个开关都长在这个类里，现在全搬去了 `models/feature.py`。
+> 留下的是**规则和数据**：`env.snake` / `.direction` / `.food` / `.hunger` / `.W`，
+> 加上 `simulate()` / `simulate_from()` / `apply()` / `reachable()` / `will_die()`。
+
+### 算法层：跟蛇无关
+
+| 文件 | 干什么 |
+|---|---|
+| **`algo.py`** | **纯 PPO** —— 采样 / GAE / PPO 更新 / 评估。**里面一条蛇都没有**：只依赖 gymnasium 的 `reset()/step()` 契约和模型的两条接口（`model(x)`、`model.dist_and_value(x)`）。它的自测跑在一个**玩具环境**上，就是为了证明这一点 |
+
+### ⭐ 模型层：加模型只动这一格
+
+| 文件 | 干什么 |
+|---|---|
+| **`models/feature.py`** | **模型 ①** `NAME="feature"` —— `FeatObs`（在这 9 维后面**接上** BFS 那 9 维 → 18 维）+ `PPOActorCritic` + **37 条自测** |
+| **`models/cnn.py`** | **模型 ②** `NAME="cnn"` —— `GridObs`（**丢掉**那 9 维，从状态重画成 `(4,8,8)`，头永远朝上）+ `GridActorCritic`（mlp / cnn 两个 arch）+ **59 条自测** |
+| **`models/__init__.py`** | **注册表** —— `REGISTRY` + `normalize()`（兼容三种历史 checkpoint 格式）+ `load_for_view` / `load_all` / `describe` / `ui` |
+
+**一个模型文件要提供的四样：**
+
+| | |
+|---|---|
+| `NAME` | 注册名（也是 checkpoint 里记的名字）|
+| `make(cfg)` | 建 `(env, net)` |
+| `describe(cfg)` | 一句话简介，`watch.py` 打印用 |
+| `ui(cfg)` | 网页展示用：`{name, subtitle, color}` |
+| `save_meta(cfg)` | 存 checkpoint 时写什么 |
+
+> ⭐ **包装饰器（wrapper）是两种写法，都有：**
+> `FeatObs` 是**扩展型**（`np.concatenate([obs, 自己算的])`），
+> `GridObs` 是**替换型**（`observation(self, obs)` 收到的那 9 维**直接扔掉**）。
+> 两种都合法。`probe_cnn.py` 里还套了两层（`GridObs(FeatObs(SnakeEnv()))`），
+> 外层要的属性会一路穿透到真环境。
+
+### 流程层：换模型不用动
+
+| 文件 | 干什么 |
+|---|---|
+| **`train.py`** | **唯一的训练循环**（以前 `ppo.py` 和 `e2e.py` 各有一份 150 行、常量逐个相同的副本）。`--model feature\|cnn` 选模型，其余一个字不改 |
+| `watch.py` | 开窗口实时看（右侧数据面板：局数 / 长度 / 死因累计 / 最近 12 局柱状图）。**输入说明由模型自己 `describe()`** |
+| `record.py` | 不开窗口，扫 60 局挑最好的一局拼成胶片图 |
+| `probe_cnn.py` | **探针** —— 冻住训好的 CNN，从中间层 128 维回归「还剩多少空格」「追不追得到尾巴」等量，再做**投影消融**看它是不是真在用。默认读 `snake_e2e_cnn.pth`、跑 260 局 |
 
 ### 基线：造环境阶段定的，跟用哪种网络无关
 
 | 文件 | 干什么 |
 |---|---|
 | `play.py` | **你自己用键盘玩**。玩的是**原始游戏**，压根不碰网络 —— 用来验收「游戏本体对不对」 |
-| `random_baseline.py` | 随机策略（**地板线 0.16 豆**）|
-| `heuristic.py` | 两档手写规则 AI（**目标线 17.84 / 24.04 豆**）。PPO 必须打赢它。内部 import 了 `random_baseline.run_episodes` |
+| `random_baseline.py` | 随机策略（**地板线 ~0.16 豆**，没播种，每次略有浮动）|
+| `heuristic.py` | 两档手写规则 AI（**目标线 17.84 / 24.04 豆**）。PPO 必须打赢它。内部 import 了 `random_baseline.run_episodes`，复用 `env.simulate()` / `env.reachable()` 而不是自己重写碰撞逻辑 |
 
-### ⚠️ 一个文件两种身份：`ppo.py`
-
-| 身份 | 内容 | 谁在用 |
-|---|---|---|
-| **特征版的训练脚本** | `python ppo.py --deep --tail` | 命令行直接跑 |
-| **共用模块** | `PPOActorCritic` / `collect_trajectories` / `compute_gae_multi` / `ppo_update` / `eval_detail` / `load_for_view` | **`e2e.py`（端到端训练）· `watch.py` · `record.py`** |
-
-> 这是它最容易看错的地方 —— 名字像是「特征版专属」，其实**端到端的算法一行副本都没有，全从它 import**。
-
-### 网格表示层：只有端到端用
+### 网页 demo（可选，跟训练无关）
 
 | 文件 | 干什么 |
 |---|---|
-| **`e2e_grid.py`** | **表示层** —— `GridObs` wrapper（`snake_env.py` 一行不改）+ `GridActorCritic` 两个 arch + **48 条自测** |
-| **`e2e.py`** | **端到端训练脚本**。算法全从 `ppo.py` import，**只换了输入的样子** |
-| **`probe_cnn.py`** | **探针** —— 冻住训好的 CNN，从中间层 128 维回归「还剩多少空格」「追不追得到尾巴」等量，再做**投影消融**看它是不是真在用。默认读 `snake_e2e_cnn.pth`、跑 260 局 |
+| `demo_server.py` | 本地网页后端：两个模型**同时**玩同一个种子开出来的棋盘，`http.server` 现算现发。支持 systemd socket 激活 + 空闲自动退出 |
+| `demo.html` | 页面。无依赖、无框架，`canvas` 手绘。**用相对路径调 API**，所以 `/` 和子路径下都能跑 |
+| `deploy/` | **线上部署记录（服务器地址 / systemd 单元 / Caddy 片段）—— 故意不进 git**，`.gitignore` 里排除了 |
 
-### 两种表示都认
-
-| 文件 | 干什么 |
-|---|---|
-| `watch.py` | 开窗口实时看（右侧数据面板：局数 / 长度 / 死因累计 / 最近 12 局柱状图）。**靠 `ppo.load_for_view` 自动认出特征版还是网格版** |
-| `record.py` | 不开窗口，扫 60 局挑最好的一局拼成胶片图 |
-
-> **那「特征版的表示层」在哪个文件？—— 没有单独的文件，它就在 `snake_env.py` 的 `obs` 里。**
-> `snake_env` 直接吐 12 / 15 / 18 维数字，网络是 `ppo.py` 里的 `PPOActorCritic`。
-> 网格版之所以要多出个 `e2e_grid.py`，是因为它得**在外面套一层 wrapper 把 obs 换掉**，
-> 而 `snake_env.py` 不许动。
+> `demo_server.py` 里的 `SIDES` 就是**一串 checkpoint 文件名** —— 名字、副标题、配色
+> 都由模型自己报（`models/*.py` 的 `LABEL` / `SUB` / `COLOR`）。
+> 以前这些信息散在**四个地方**（`load_for_view` 的分派、`watch.py` 的打印、`SIDES`、`demo.html` 的 `ACCENT`），
+> 加一个模型要改四处，漏一处不报错。
 
 ### 训练产物（`.pth`）
 
 > 四个模型**都入库了**（一共 1.3 MB）—— 这样 clone 下来不用先训 3.3 小时就能看它玩。
 
-| 文件 | 是什么 |
-|---|---|
-| `snake_both.pth` | **18 维先验规则版** —— 最强，59.12 豆。`watch.py` / `record.py` 不给参数时默认加载它 |
-| `snake_long.pth` | 12 维长训练版（消融对照，34.84 豆）|
-| `snake_e2e_mlp.pth` | 端到端 MLP 版（33.24 豆）|
-| `snake_e2e_cnn.pth` | 端到端 CNN 版（50.82 豆）。`probe_cnn.py` 默认读它 |
+| 文件 | 是什么 | 注册名 |
+|---|---|---|
+| `snake_both.pth` | **18 维先验规则版** —— 最强，59.12 豆。`watch.py` / `record.py` 不给参数时默认加载它 | `feature` |
+| `snake_long.pth` | 12 维长训练版（消融对照，34.84 豆）| `feature` |
+| `snake_e2e_mlp.pth` | 端到端 MLP 版（33.24 豆）| `cnn`（`arch=mlp`）|
+| `snake_e2e_cnn.pth` | 端到端 CNN 版（50.82 豆）。`probe_cnn.py` 和网页 demo 默认读它 | `cnn` |
+
+> ⚠️ 前三个是**老格式** checkpoint（写的是 `obs_mode` 或不写），
+> `models/__init__.py` 的 `normalize()` 会把它们认出来 —— **一个都不用重训**。
 
 ### 图片
 
@@ -702,26 +771,31 @@ uv run python watch.py            # 先看它自己玩一局
 ### 脚本速查
 
 ```bash
-# ---- 特征版 ----
-uv run python snake_env.py             # 自测（53 条断言）
+# ---- 自测（5 份，共 173 条断言）----
+uv run python snake_env.py             # 游戏规则（44 条）
+uv run python algo.py                  # 算法层（16 条，跑在玩具环境上，跟蛇无关）
+uv run python models/feature.py        # 先验特征表示（37 条）
+uv run python models/cnn.py            # 网格表示（59 条）
+uv run python models/__init__.py       # 注册表 + 4 个已训模型的兼容性（17 条）
+
+# ---- 训练 / 看 ----
+uv run python train.py --model feature --smoke   # 烟测（2 批，确认不炸）
+uv run python train.py --model feature --solve 12        # 12 维（17 秒，早停）
+uv run python train.py --model feature --deep --tail --out snake_both.pth   # 18 维（39 分钟）
+uv run python train.py --model cnn --arch mlp --out snake_e2e_mlp.pth       # 网格+MLP（10 分钟）
+uv run python train.py --model cnn --arch cnn --out snake_e2e_cnn.pth       # 网格+CNN（3.3 小时）
+uv run python watch.py                 # 看模型玩（自动认是哪种表示）
+uv run python watch.py snake_e2e_mlp.pth
+uv run python record.py                # 出一张胶片图
+uv run python probe_cnn.py             # 探针 + 投影消融（读 snake_e2e_cnn.pth，260 局）
+
+# ---- 基线（跟用哪种网络无关）----
 uv run python play.py                  # 你自己玩
 uv run python random_baseline.py       # 随机基线
 uv run python heuristic.py             # 手写规则 AI
-uv run python ppo.py                   # 训练 12 维（17 秒）
-uv run python ppo.py --smoke           # 烟测（2 批，确认不炸）
-uv run python ppo.py --deep --tail --out snake_both.pth   # 训练 18 维（39 分钟）
 
-# ---- 端到端版 ----
-uv run python e2e_grid.py              # 表示层自测（48 条断言）
-uv run python e2e.py --smoke           # 烟测（2 批）
-uv run python e2e.py --arch mlp --out snake_e2e_mlp.pth   # 训练（10 分钟）
-uv run python e2e.py --arch cnn --out snake_e2e_cnn.pth   # 训练（3.3 小时）
-uv run python probe_cnn.py             # 探针 + 投影消融（读 snake_e2e_cnn.pth，260 局）
-
-# ---- 两边共用 ----
-uv run python watch.py                 # 看模型玩（自动认是哪种表示）
-uv run python watch.py snake_e2e_mlp.pth
-uv run python record.py                # 出胶片图
+# ---- 网页 demo（可选）----
+uv run python demo_server.py           # → http://127.0.0.1:8770
 ```
 
 ---

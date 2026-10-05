@@ -37,7 +37,7 @@ import numpy as np
 import torch
 
 from snake_env import W
-from ppo import load_for_view
+from models import load_all, ui as model_ui, describe
 
 HOST, PORT = "127.0.0.1", 8770
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -66,10 +66,13 @@ SOCKET_ACTIVATED = False
 
 REASON_CN = {"wall": "撞墙", "self": "咬到自己", "starve": "饿死", "win": "填满整盘！"}
 
-# 左 / 右。想换成 ③ 纯 MLP 做三方对照，这里加一行就行。
+# ⭐ 想换 / 想加对照的那一方，只改这个列表 —— 名字、副标题、配色
+#    都由 checkpoint 里的模型自己说（models/*.py 的 LABEL/SUB/COLOR）。
+#    以前这些信息散在【4 个地方】：load_for_view 的分派、watch.py 的打印、
+#    这里的 SIDES、demo.html 的 ACCENT。加一个模型要记得改 4 处，漏一处不报错。
 SIDES = [
-    ("feat", "先验规则 + MLP", "6 个基础维度 + 12 个先验规则", "snake_both.pth"),
-    ("cnn", "纯 CNN", "(4, 8, 8) 原始网格", "snake_e2e_cnn.pth"),
+    "snake_both.pth",        # 先验规则 + MLP   （终测 59.12）
+    "snake_e2e_cnn.pth",     # 纯 CNN           （终测 50.82）
 ]
 
 
@@ -77,16 +80,21 @@ SIDES = [
 # 一边：一个环境 + 一个模型 + 累计战绩
 # ============================================================
 class Side:
-    def __init__(self, key, name, subtitle, ckpt):
-        self.key, self.name, self.subtitle = key, name, subtitle
+    def __init__(self, ckpt):
         self.ckpt = ckpt
 
-        self.env, self.model = load_for_view(ckpt)
-        self.model.eval()
+        # ⭐ 一行拿到 (env, model, cfg)，再问模型自己"你叫什么、什么颜色"。
+        #    env / model 的建法完全由 models/ 决定 —— 这里不判断 obs 是几维。
+        self.env, self.model, self.cfg = load_all(ckpt)
+        info = model_ui(self.cfg)
+        self.key, self.name, self.subtitle, self.color = (
+            info["key"], info["name"], info["subtitle"], info["color"])
 
-        # GridObs 是套在 SnakeEnv 外面的一层 wrapper，画图要读的是【里面】那个真环境。
-        # 特征版没有 wrapper，getattr 拿回自己。
+        # GridObs / FeatObs 都是套在 SnakeEnv 外面的 wrapper，
+        # 画图要读的是【里面】那个真环境。两层也穿透（probe_cnn 就套了两层）。
         self.inner = getattr(self.env, "env", self.env)
+        while hasattr(self.inner, "env"):
+            self.inner = self.inner.env
 
         self.games = 0          # 打了几局
         self.history = []       # 每局的豆数
@@ -150,6 +158,9 @@ class Side:
             "key": self.key,
             "name": self.name,
             "subtitle": self.subtitle,
+            # ⭐ 颜色跟着模型走 —— demo.html 那边就不用再维护一张「谁是什么色」的表，
+            #    也就不会出现"加了模型但忘了加颜色、两个面板撞色"这种事。
+            "color": self.color,
             "snake": [[int(r), int(c)] for r, c in i.snake],
             # ⚠️ direction 是元组 (dr, dc)（UP=(-1,0) / RIGHT=(0,1) …），不是编号。
             #    原样发过去，网页那边就不用再维护一张"编号↔方向"的表 —— 那种表最容易对错。
@@ -175,8 +186,9 @@ class Side:
 # ============================================================
 class Arena:
     def __init__(self):
-        self.sides = [Side(*s) for s in SIDES]
-        self.speed = 15           # 每秒走几步
+        self.sides = [Side(c) for c in SIDES]
+        self.speed = 5            # 每秒走几步。页面加载时会把滑块的当前值推上来，
+                                  # 所以这只是【没有页面时】的兜底（比如直接 curl /cmd）。
         self.running = True
         self.seed = 0
         self.round = 0
@@ -441,11 +453,15 @@ def main():
     print("=" * 62, flush=True)
     print("  贪吃蛇 · 双边对照 Demo", flush=True)
     print("=" * 62, flush=True)
-    for _, name, sub, ckpt in SIDES:
-        print(f"  {name:<16} {sub:<22} {ckpt}", flush=True)
-    print(flush=True)
 
+    # ⚠️ banner 放在 Arena 【之后】打：Arena 已经把模型建好了，
+    #    直接问它拿名字就行。放在前面的话会把每个模型都 load 两遍
+    #    （每个几百 MB，白等一遍 import + 读盘）。
     ARENA = Arena()
+    for s in ARENA.sides:
+        print(f"  {s.name:<16} {s.subtitle:<24} {s.ckpt}", flush=True)
+        print(f"  {'':<16} {describe(s.cfg)}", flush=True)
+    print(flush=True)
 
     global SOCKET_ACTIVATED
 

@@ -2,8 +2,8 @@
 把训练好的模型跑一局，录成一张胶片图（不用开窗口）
 
 运行：uv run python record.py [checkpoint] [局数上限]
-      checkpoint 不填就用 ppo.DEFAULT_CKPT（snake_both.pth）
-      没有模型就先跑一遍：uv run python ppo.py
+      checkpoint 不填就用 models.DEFAULT_CKPT（snake_both.pth）
+      没有模型就先跑一遍：uv run python train.py
 
 输出：snake_filmstrip.png —— 一张图里 5×4 共 20 个关键时刻，
       从左上到右下是这一局的推进顺序，每帧标了吃到的豆子数。
@@ -18,7 +18,7 @@ import numpy as np
 import pygame
 import torch
 
-from ppo import DEFAULT_CKPT, load_for_view
+from models import DEFAULT_CKPT, load_for_view
 from snake_env import pick_font
 
 CKPT = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_CKPT

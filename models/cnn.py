@@ -1,28 +1,32 @@
 """
-端到端贪吃蛇 · 表示层
+模型 ② cnn · 原始网格 + 卷积
 
 ================================================================
-【这一层要干什么】
+【这个文件是"一个模型"的完整定义】
 
-    把 SnakeEnv 吐的【9~18 维手工特征】换成【8×8 的原始网格】，
-    让网络自己从格子里学特征。
+    和 models/feature.py 平级，回答同样三个问题：
 
-    要回答的问题是：
+        NAME              → "cnn"
+        make(cfg)         怎么建 env + net
+        describe(cfg)     我是干什么的
+        save_meta(cfg)    存 checkpoint 时写什么
 
-        把 BFS 的结果拿走，只给原始棋盘，网络能不能自己算出来？
+【要回答的问题】
 
-    flood fill / 2 步前瞻 / 蛇尾可达 —— 这三组值钱的维度
-    全是人用 BFS 算好了喂进去的。这里把它们全拿掉，只留原料。
+    把 BFS 的结果拿走，只给原始棋盘，网络能不能自己算出来？
 
-【为什么用 wrapper，而不是改 snake_env.py】
+    特征版里值钱的那 6 维（flood fill / 2 步前瞻 / 蛇尾可达）
+    全是人【迭代计算】出来的。BFS 的原料（整张棋盘）还在网格里，
+    但 CNN 是前馈的、BFS 是迭代的 —— 想用卷积模拟 N 步迭代，就得堆 N 层。
 
-    snake_env.py 已经过 53 条自测，是【冻结】的。
-    在外面套一层 ObservationWrapper 换掉观测，
-    游戏规则就保证没变 —— 对照才干净（同棋盘、同奖励、同算法，只换输入）。
+【观察者模式：和 feature.py 相反的另一种写法】
 
-    ⚠️ 但 gymnasium 的 Wrapper 【不转发自定义属性】。
-       不补 __getattr__ 的话，watch.py 读 env.W / env.snake / env.direction
-       会直接 AttributeError。
+    FeatObs  【扩展】  内层的 9 维照单全收，在后面接上自己算的
+    GridObs  【替换】  内层的 9 维直接扔掉，从 env.snake 重画成 (4,8,8)   ← 这个
+
+    ⚠️ observation(self, obs) 收到的那个 obs 参数【完全不用】。
+       因为网格版要的东西（每格是什么）比那 9 个数更原始也更多。
+       这不是缺陷 —— 它证明了 wrapper 想读多底层就能读多底层。
 
 【四个通道】
 
@@ -53,8 +57,29 @@
 
     输入从 18 个数变成 256 个数（大 14 倍），能直接用的信息反而少了三类。
 
+【arch 两档 —— 这是消融的【对照组】】
+
+    arch="mlp"  把网格直接拉平。主干和特征版【完全同架构】（2×128 Tanh），
+                只换输入 —— 所以这是「特征 vs 原始网格」最干净的控制变量。
+    arch="cnn"  两层 3×3 卷积 + 1×1 降通道，再看卷积值多少。
+
+    实测（同一个 PPO、同样 12,800 局）：
+        18 维特征 + MLP   59.12 个豆
+        (4,8,8)  + MLP   33.24 个豆    ← 信息更多，反而差 26 个
+        (4,8,8)  + CNN   50.82 个豆    ← 卷积追回 17.6 个
+    差的 8.3 个，就是那 6 维 BFS 值多少钱。
+
 ================================================================
 """
+
+import os
+import sys
+
+# ⚠️ 直接 `uv run python models/cnn.py` 跑自测时，Python 只把【脚本所在目录】
+#    （也就是 models/）加进 sys.path，所以下面的 `import snake_env` 会 ModuleNotFoundError。
+#    往上一级补一条路 —— 这样 `python models/cnn.py` 和 `python -m models.cnn`
+#    两种跑法都能用。（从 train.py / watch.py 里 import 时用不到这一行。）
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import gymnasium as gym
@@ -65,9 +90,18 @@ from gymnasium import spaces
 
 from snake_env import SnakeEnv, W, UP, RIGHT, DOWN, LEFT
 
+NAME = "cnn"
+
+# 给人看的（watch.py 不用，网页 demo 用）—— 见 models/feature.py 里那段说明
+LABEL = "纯 CNN"
+SUB = "(4, 8, 8) 原始网格"
+COLOR = "#6fb4ec"
+
 # 通道编号
 N_CH = 4
 CH_BODY, CH_HEAD, CH_FOOD, CH_HUNGER = 0, 1, 2, 3
+
+_ENV_KEYS = ("grid", "max_hunger", "render_mode", "seed")
 
 
 # ============================================================
@@ -95,13 +129,13 @@ def canonical(r, c, direction, size):
 
 
 class GridObs(gym.ObservationWrapper):
-    """SnakeEnv → (4, W, W) 原始网格，蛇头永远朝上。"""
+    """SnakeEnv（基础 9 维）→ (4, W, W) 原始网格，蛇头永远朝上。"""
 
     def __init__(self, env):
         super().__init__(env)
         self.observation_space = spaces.Box(
             low=0.0, high=1.0, shape=(N_CH, env.W, env.W), dtype=np.float32)
-        # ⚠️ 必须覆盖 obs_dim —— 不覆盖会【穿透】到内层的 12/18，把打印骗过去
+        # ⚠️ 必须覆盖 obs_dim —— 不覆盖会【穿透】到内层的 9，把打印骗过去
         self.obs_dim = self.observation_space.shape
 
     def __getattr__(self, name):
@@ -115,7 +149,7 @@ class GridObs(gym.ObservationWrapper):
         return getattr(env, name)
 
     def observation(self, obs):
-        return self._grid()
+        return self._grid()          # ⚠️ obs 参数故意不用，见文件头
 
     def _grid(self):
         e, size, d = self.env, self.env.W, self.env.direction
@@ -142,12 +176,12 @@ class GridObs(gym.ObservationWrapper):
 class GridActorCritic(nn.Module):
     """吃 (C, W, W) 网格，吐动作概率和 value。
 
-    arch="mlp"  ⭐ 把网格直接拉平。主干和【特征版完全同架构】（2×128 Tanh），
-                   只换输入 —— 所以这是「特征 vs 原始网格」最干净的控制变量。
-    arch="cnn"  两层 3×3 卷积 + 1×1 降通道，再看卷积值多少。
-
-    ⚠️ 两条主干分开（SepNet），理由见 ppo.py 开头：共用主干时
+    ⚠️ 两条主干分开（SepNet），理由见 models/feature.py：共用主干时
        critic 的梯度会通过公共参数把 actor 带崩（insights #19 / #26）。
+
+    ⚠️ 契约（algo.py 只要求这两条）：
+           model(x)                → (probs, value)
+           model.dist_and_value(x) → (Categorical, value)
     """
 
     def __init__(self, obs_shape=(N_CH, W, W), action_dim=3, hidden_size=128, arch="mlp"):
@@ -193,6 +227,48 @@ class GridActorCritic(nn.Module):
 
 
 # ============================================================
+# 注册表要的四样
+# ============================================================
+def make(cfg):
+    """建 (env, model)。
+
+    ⚠️ 网格版的内层 SnakeEnv【不需要任何特征开关】——
+       它把内层算的那 9 维整个扔掉（见文件头"替换型"那段）。
+       e2e.py 当年写 make_env_kw() 关掉三组 BFS 是为了【省时间】，
+       现在游戏本来就不算它们了，这个优化变成默认行为。
+    """
+    kw = {k: v for k, v in cfg.get("env_kw", {}).items() if k in _ENV_KEYS}
+    env = GridObs(SnakeEnv(**kw))
+    net = GridActorCritic(obs_shape=(N_CH, env.W, env.W), action_dim=3,
+                          hidden_size=128, arch=cfg.get("arch", "cnn"))
+    return env, net
+
+
+def describe(cfg, env=None):
+    arch = cfg.get("arch", "cnn")
+    shape = cfg.get("obs_shape") or (N_CH, W, W)
+    what = "卷积" if arch == "cnn" else "MLP（对照组）"
+    return f"原始网格 {tuple(shape)} + {what} —— ch0 蛇身 / ch1 蛇头 / ch2 食物 / ch3 饥饿"
+
+
+def save_meta(cfg):
+    return {"model": NAME,
+            "arch": cfg.get("arch", "cnn"),
+            "obs_shape": tuple(cfg.get("obs_shape") or (N_CH, W, W)),
+            "env_kw": {}}
+
+
+def ui(cfg):
+    """网页要的展示信息（名字 / 副标题 / 颜色）。
+
+    ⚠️ arch=mlp 是【对照组】，名字得跟着变 —— 不然网页上两个都叫"纯 CNN"。
+    """
+    if cfg.get("arch", "cnn") == "mlp":
+        return {"key": NAME, "name": "纯网格 + MLP", "subtitle": SUB + "（对照组）", "color": COLOR}
+    return {"key": NAME, "name": LABEL, "subtitle": SUB, "color": COLOR}
+
+
+# ============================================================
 # 自测
 # ============================================================
 if __name__ == "__main__":
@@ -207,7 +283,7 @@ if __name__ == "__main__":
         print(f"  ✅ {name}{('  ' + extra) if extra else ''}")
 
     print("=" * 78)
-    print("e2e_grid 自测 · 原始网格表示")
+    print("models/cnn 自测 · 原始网格表示 + 卷积")
     print("=" * 78)
 
     # ---- 1. 形状 / dtype / 范围 / gymnasium 契约 ----
@@ -216,7 +292,7 @@ if __name__ == "__main__":
     o, info = env.reset(seed=0)
     check("shape == (4, 8, 8)", o.shape == (4, 8, 8), str(o.shape))
     check("dtype == float32", o.dtype == np.float32, str(o.dtype))
-    check("obs_dim 被覆盖成 (4,8,8)（不是内层的 12）", env.obs_dim == (4, 8, 8), str(env.obs_dim))
+    check("obs_dim 被覆盖成 (4,8,8)（不是内层的 9）", env.obs_dim == (4, 8, 8), str(env.obs_dim))
     check("observation_space.shape == (4,8,8)", env.observation_space.shape == (4, 8, 8))
     # check_env 会对着 observation_space 严格校验 shape+dtype+范围
     check_env(GridObs(SnakeEnv()), skip_render_check=True)
@@ -228,6 +304,7 @@ if __name__ == "__main__":
     check("env.direction 穿透", env.direction == RIGHT, str(env.direction))
     check("env.max_hunger 穿透", env.max_hunger == 100)
     check("env.render() 穿透", env.render().shape == (W * 40, W * 40, 3))
+    check("⭐ env.simulate() 穿透（新模型靠它，不用重写规则）", env.simulate(1)[1] in (True, False))
 
     # ---- 2. ⭐ 旋转正确性：脖子永远在头的正下方 ----
     print("\n[2] ⭐ 旋转正确性（头永远朝上）—— 搞错了不会报错，只会学得很烂")
@@ -280,7 +357,7 @@ if __name__ == "__main__":
             e.env.direction = d
             h = canonical(*e.env.snake[0], d, W)
             for a in range(3):
-                nh, eat, danger = e.env._simulate(a)
+                nh, eat, danger = e.env.simulate(a)
                 if danger != 0:          # 这一步会死，没有落点
                     continue
                 nc = canonical(*nh, d, W)
@@ -375,7 +452,7 @@ if __name__ == "__main__":
     check("全程取值都在 [0,1]", lo >= 0.0 and hi <= 1.0, f"[{lo:.3f}, {hi:.3f}]")
     check("每一帧都恰好有一个蛇头", bad_head == 0, f"异常 {bad_head} 帧")
 
-    # ---- 8. 网络能前向、能反向 ----
+    # ---- 8. 两个网络能前向、能反向 ----
     print("\n[8] 两个网络")
     for arch in ("mlp", "cnn"):
         net = GridActorCritic(obs_shape=(N_CH, W, W), arch=arch)
@@ -392,23 +469,42 @@ if __name__ == "__main__":
         check(f"{arch}: 反向有梯度", gnorm > 0, f"总梯度 {gnorm:.2f}")
         print(f"     {arch} 参数量 {net.num_params()/1000:.1f}k")
 
-    # ---- 9. 网格版和特征版看到的是【同一个局面】----
-    print("\n[9] 网格版 vs 特征版：同一局面，两种表示")
+    # ---- 9. ⭐ 两种表示看的是【同一个局面】----
+    print("\n[9] ⭐ 网格版 vs 特征版：同一局面，两种表示")
+    from models.feature import FeatObs
     raw = SnakeEnv()
     raw.reset(seed=9)
     raw.snake = [(4, 4), (4, 3), (4, 2)]
     raw.direction = RIGHT
     raw.food = (2, 6)
-    feat = raw._get_obs()          # 特征版看到的东西
+    base = raw._get_obs()          # 游戏给的基础 9 维
+    feat = FeatObs(SnakeEnv(), use_space=True, use_deep=True, use_tail=True)
+    feat.reset(seed=9)
+    feat.env.snake, feat.env.direction, feat.env.food = raw.snake, raw.direction, raw.food
+    f18 = feat.observation(feat.env._get_obs())
     grid = GridObs(SnakeEnv())
     grid.reset(seed=9)
     grid.env.snake, grid.env.direction, grid.env.food = raw.snake, raw.direction, raw.food
     g = grid._grid()
-    check("同一局面下，特征版是 1 维 12 个数", feat.shape == (12,))
-    check("同一局面下，网格版是 (4,8,8) 共 256 个数", g.shape == (4, 8, 8))
-    # 特征版的 [9:12]（flood fill）在网格版里【没有任何对应物】
+    check("同一局面：游戏给 9 维", base.shape == (9,), str(base.shape))
+    check("同一局面：特征版 18 维（9 + 9 先验）", f18.shape == (18,), str(f18.shape))
+    check("同一局面：网格版 (4,8,8) 共 256 个数", g.shape == (4, 8, 8), str(g.shape))
+    check("特征版的前 9 维【就是】游戏给的那 9 维（扩展型）",
+          np.array_equal(base, f18[:9]))
     check("网格版里【没有】flood fill / 2步前瞻 / 蛇尾可达 的任何通道",
           N_CH == 4, "只有 蛇身/蛇头/食物/饥饿 四层")
+
+    # ---- 10. 注册表四件套 ----
+    print("\n[10] 注册表接口（make / describe / save_meta）")
+    for arch in ("mlp", "cnn"):
+        env2, net2 = make({"arch": arch})
+        check(f"make(arch={arch}) 建出网格环境", env2.obs_dim == (4, 8, 8), str(env2.obs_dim))
+        check(f"make(arch={arch}) 网络记住了 arch", net2.arch == arch)
+        check(f"describe(arch={arch}) 给出人话", arch == "cnn" or "MLP" in describe({"arch": arch}),
+              describe({"arch": arch}))
+    check("save_meta() 记下了模型名", save_meta({"arch": "cnn"})["model"] == "cnn")
+    check("⭐ env_kw 里混着的 SnakeEnv 参数会被认出来",
+          make({"arch": "cnn", "env_kw": {"max_hunger": 50}})[0].max_hunger == 50)
 
     print("\n" + "=" * 78)
     print(f"✅ 全部 {ok} 条断言通过")

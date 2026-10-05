@@ -2,8 +2,8 @@
 看训练好的 PPO 自己玩贪吃蛇
 
 运行：uv run python watch.py [checkpoint]
-      checkpoint 不填就用 ppo.DEFAULT_CKPT（snake_both.pth，18 维，终测 59 个豆）
-      没有模型就先跑一遍：uv run python ppo.py
+      checkpoint 不填就用 models.DEFAULT_CKPT（snake_both.pth，18 维，终测 59 个豆）
+      没有模型就先跑一遍：uv run python train.py
 
 按键：
     ESC 或关窗口     退出
@@ -39,7 +39,7 @@ import numpy as np
 import pygame
 import torch
 
-from ppo import DEFAULT_CKPT, load_for_view
+from models import DEFAULT_CKPT, load_all, describe
 from snake_env import CELL, pick_font
 
 CKPT = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_CKPT
@@ -57,21 +57,16 @@ REASON_CN = {"wall": "撞墙", "self": "咬到了自己", "starve": "饿死", "w
 BG, PANEL_BG, LINE = (16, 19, 26), (22, 26, 34), (44, 51, 64)
 FG, MUTED, ACCENT, WARN = (232, 236, 244), (128, 139, 158), (150, 240, 175), (236, 172, 74)
 
-env, model = load_for_view(CKPT)
+env, model, CFG = load_all(CKPT)
 MAX_BEANS = env.W * env.W - 3        # 初始蛇长 3，最多再吃这么多豆就满盘
 
 print("=" * 68)
-print("贪吃蛇 · 看 PPO 自己玩")
+print("贪吃蛇 · 看模型自己玩")
 print("=" * 68)
-print(f"  模型: {CKPT}")
-# 两种表示：一维手工特征 vs (4,8,8) 原始网格
-_shape = env.observation_space.shape
-if len(_shape) == 3:
-    print(f"  输入: 原始网格 {tuple(_shape)} —— ch0 蛇身 / ch1 蛇头 / ch2 食物 / ch3 饥饿")
-    print(f"        ⚠️ 端到端版：没有 flood fill / 2步前瞻 / 蛇尾可达，网络要自己学")
-else:
-    print(f"  输入: {env.obs_dim} 维手工特征 (flood fill={int(env.use_space)} "
-          f"2步前瞻={int(env.use_deep)} 蛇尾可达={int(env.use_tail)})")
+print(f"  模型: {CKPT}   [{CFG['model']}]")
+# ⭐ 表示方式由模型自己说 —— 以前是这里硬编码 if len(shape)==3 判断的，
+#    加一个模型就要来改一次。现在问注册表。
+print(f"  输入: {describe(CFG)}")
 print("  ESC 退出 | 空格 暂停/下一局 | Enter 下一局 | A 自动连播 | S 截图 | ↑↓ 调速")
 print("  ⚠️ 打开后先【点一下窗口】，键盘才生效")
 print("=" * 68)

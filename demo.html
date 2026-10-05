@@ -150,8 +150,8 @@
   <button id="b-step">单步</button>
   <span id="spin" aria-hidden="true"></span>
   <div class="spd">
-    速度 <input id="speed" type="range" min="1" max="60" value="15">
-    <b id="spd-v">15</b> 步/秒
+    速度 <input id="speed" type="range" min="1" max="60" value="5">
+    <b id="spd-v">5</b> 步/秒
   </div>
 </div>
 
@@ -189,22 +189,31 @@ const C = {
   eye:      [ 14, 18, 24],
   food:     [240,110,110],
 };
-const ACCENT = { feat:"#96f0af", cnn:"#6fb4ec", mlp:"#b9a0e8" };
 const rgb  = a => `rgb(${a[0]},${a[1]},${a[2]})`;
 const lerp = (a,b,t) => a.map((v,i) => Math.round(v + (b[i]-v)*t));
 /* 和 snake_env.turn_right 一致： (dr,dc) → (dc,-dr) */
 const turnRight = d => [d[1], -d[0]];
 
+/* ⚠️ 这里【故意没有】一张「哪个模型是什么颜色」的表。
+   颜色由服务端每个模型自己发过来（state.sides[].color），
+   源头在模型文件里（models/*.py 的 COLOR）—— 加模型只改那一处。
+   以前这里有一张 ACCENT = {feat:…, cnn:…, mlp:…}，
+   加模型忘了同步的话不报错，只是两个面板撞色。 */
+
 /* ============ 建面板（几边都行，现在配的是 2）============ */
-let panels = {}, N = 8, lastRound = -1;
+/* ⚠️ panels 按【位置】索引，不按 s.key。
+   以前是 panels[s.key] —— 而 key 现在是【模型名】（"feature" / "cnn"），
+   两个同名的模型（比如将来对比 9 维和 18 维两个 feature 版）会互相覆盖，
+   页面上只画得出一边。按位置存就没这个问题。 */
+let panels = [], N = 8;
 
 function build(sides){
   const main = document.getElementById("panels");
-  main.innerHTML = ""; panels = {};
-  for (const s of sides){
+  main.innerHTML = ""; panels = [];
+  sides.forEach(s => {
     const el = document.createElement("section");
     el.className = "panel";
-    el.style.setProperty("--accent", ACCENT[s.key] || "#96f0af");
+    el.style.setProperty("--accent", s.color || "#96f0af");
     el.innerHTML = `
       <div class="phead">
         <span class="dot"></span>
@@ -228,8 +237,8 @@ function build(sides){
     el.querySelector(".pname").textContent = s.name;
     el.querySelector(".psub").textContent  = s.subtitle;
     main.appendChild(el);
-    panels[s.key] = el;
-  }
+    panels.push(el);          // ← 按位置，不按 s.key
+  });
 }
 
 /* ============ 画一盘 ============ */
@@ -317,10 +326,7 @@ function roundRect(ctx, x, y, w, h, r){
 /* ============ 渲染一帧 ============ */
 function render(st){
   N = st.board || 8;
-  if (st.round !== lastRound || Object.keys(panels).length !== st.sides.length){
-    lastRound = st.round;
-  }
-  if (Object.keys(panels).length !== st.sides.length) build(st.sides);
+  if (panels.length !== st.sides.length) build(st.sides);
 
   document.getElementById("round").textContent = st.round;
   document.getElementById("seed").textContent  = st.seed;
@@ -334,9 +340,9 @@ function render(st){
   document.getElementById("b-step").disabled = over;
   document.getElementById("b-new").classList.toggle("attn", over);
 
-  for (const s of st.sides){
-    const el = panels[s.key];
-    if (!el) continue;
+  st.sides.forEach((s, i) => {
+    const el = panels[i];
+    if (!el) return;
     const q = sel => el.querySelector(sel);
     draw(el.querySelector("canvas"), s);
 
@@ -356,7 +362,7 @@ function render(st){
     q(".v-avg").textContent   = s.avg == null ? "–" : s.avg;
     q(".v-best").textContent  = s.best == null ? "–" : s.best;
     q(".v-home").textContent  = s.home;
-  }
+  });
 }
 
 /* ============ 和服务端说话 ============ */
@@ -449,6 +455,12 @@ sp.oninput = () => {
   document.getElementById("spd-v").textContent = sp.value;
   cmd({cmd:"speed", value:+sp.value});
 };
+
+/* ⚠️ 加载时先把滑块的当前值推给服务端。
+   不推的话，HTML 写 5、服务端默认 15，页面一打开其实跑的是 15 ——
+   要等用户【碰一下】滑块才会变成 5。两边各写一个数就一定会漂，
+   所以让【滑块】当唯一的真值来源，服务端那个只是没页面时的兜底。 */
+cmd({cmd:"speed", value:+sp.value});
 
 /* 空格 = 暂停/继续，N = 新棋局，→ = 单步 */
 addEventListener("keydown", e => {

@@ -14,7 +14,7 @@
     如果限制它只能用和网络一样的 12 维特征，它就退化成"另一个 PPO"，
     参考价值反而更低。
 
-⚠️ 它复用 env 的 `_simulate()` / `_reachable()`，而不是自己重写碰撞逻辑。
+⚠️ 它复用 env 的 `simulate()` / `reachable()`，而不是自己重写碰撞逻辑。
     否则测出来的是「手写规则和 env 规则哪个对」，不是「规则 AI 有多强」。
 
 ============================================================
@@ -51,13 +51,13 @@ def _candidates(env):
     head = env.snake[0]
     out = []
     for a in range(3):
-        nh, will_eat, danger = env._simulate(a)
+        nh, will_eat, danger = env.simulate(a)
         if danger != EMPTY:
             continue
         dist = (abs(nh[0] - env.food[0]) + abs(nh[1] - env.food[1])) if env.food else 0
         occ = set(env.snake) if will_eat else set(env.snake[:-1])
         occ.discard(nh)
-        space = env._reachable(nh, occ)
+        space = env.reachable(nh, occ)
         out.append({"a": a, "dist": dist, "space": space})
     return out
 

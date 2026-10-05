@@ -10,7 +10,7 @@
     这个例子里，两样都得自己设计 —— 而这两样恰恰是最容易翻车的地方。
     （insights.md #25：奖励是唯一能操控的旋钮，但前三个例子里那旋钮一直是别人在拧。）
 
-【状态：12 维】
+【状态：基础 9 维】
 
     0-2    左 / 直 / 右 三格是什么      0=空  0.5=墙  1=身体   （除 2 归一化）
     3      食物相对蛇头的【前后】      -1/0/1
@@ -19,14 +19,38 @@
     6      饥饿计数 / MAX_HUNGER              （夹到 1.0，别越界）
     7      当前长度 / (W*W)
     8      蛇头到蛇尾的曼哈顿距离 / (2(W-1))
-    9-11   走 左/直/右 之后的【可达空格数】/ (W*W)      ← flood fill
 
     ⚠️ [3][4] 是【蛇头坐标系】（随朝向旋转），不是屏幕的上下左右。
-    ⚠️ [9:12] 的下标和动作 0/1/2 【一一对齐】。
 
-    [9:12] 为什么必须有：1 格视野只能避免「立刻死」，避免不了「走进死胡同」。
-    8×8 上一条长度 20+ 的蛇，死亡绝大多数是【自陷】而不是撞墙 ——
-    而 [0:3] 在「左边是空地」和「左边那条通道被身体堵死」时输出【完全一样】。
+    ⭐ 这 9 维是【最低限度的编码】，只为让 gymnasium 的 reset/step 契约成立，
+       不是"模型的输入"。真正的表示在 models/ 里：
+
+           models/feature.py   FeatObs  在这 9 维后面【接上】BFS 那 9 维 → 18 维
+           models/cnn.py       GridObs  【丢掉】这 9 维，从状态重画成 (4,8,8)
+
+       两个 wrapper 都从【下面的公共属性】读数据，谁要什么自己拼。
+
+【⭐ 给模型用的公共接口（这道缝是唯一该依赖的东西）】
+
+    env.snake           [(r,c), ...]   蛇身，头在 [0]
+    env.direction       (dr, dc)
+    env.food            (r,c)，满盘时 None
+    env.hunger          距上次进食走了几步
+    env.max_hunger      上限
+    env.W               棋盘边长
+    env.simulate(a)     走 a 会怎样 → (新蛇头, 吃到没, 危险码)   ← 规则，别自己重写
+    env.simulate_from(body, d, food, a)   在【任意局面】下走一步（2 步前瞻要它）
+    env.apply(a)        走完之后的整个局面 (body, direction, food)，死了给 None
+    env.reachable(start, occupied)        从 start 出发能走到的空格数
+    env.will_die(a)     这一步会不会立刻死
+
+    ⚠️ 别读 env.end_reason / info["..."] —— 那是给评估和统计的。
+       训练时读它等于提前知道死因，是作弊。
+    ⚠️ 别拿 env.render() 当数据源 —— 那是画给人看的（渐变色、眼睛）。
+       真要做像素输入，另写一个函数。
+
+    📌 判据：加第 5 个模型时，【这个文件应该一个字都不用改】。
+       要改就说明这道缝划错了。
 
 【奖励：只奖励吃豆】
 
@@ -46,7 +70,7 @@
 
     撞墙 / 咬自己 / 饿死 都是【任务规则】→ 全部 terminated=True。
     没有额外的步数上限 —— 饥饿计时已经封住了回合长度。
-    所以仓库里那份 GAE 的「结尾补 0」在这里【恰好完全正确】，不用改一行。
+    所以 algo.py 那份 GAE 的「结尾补 0」在这里【恰好完全正确】，不用改一行。
 
 【自写环境特有的坑（gymnasium 本来帮你免掉的）】
 
@@ -57,8 +81,10 @@
           collect_one_trajectory 是 states.append(state) 存引用，
           复用缓冲区的话整批数据会变成最后一帧
     ⚠️ 4. 【尾巴腾格】非进食时尾巴会移开，所以「头进入尾格」是【合法】的。
-          obs 和 step 必须共用同一个 _simulate()，否则状态撒谎、value 永远学不会
+          obs 和 step 必须共用同一个 simulate()，否则状态撒谎、value 永远学不会
     ⚠️ 5. 左右旋转只写一份实现，否则动作映射和食物编码会静默镜像 180°
+    ⚠️ 6. simulate() 是【唯一的规则实现】—— step / 危险码 / 2步前瞻 / heuristic
+          全调它。谁要是再写一份碰撞判定，两份一定会漂，而且不报错。
 
 ================================================================
 """
@@ -174,22 +200,21 @@ def action_to_dir(d, action):
 
 
 class SnakeEnv(gym.Env):
-    """8×8 贪吃蛇，相对动作，特征状态 12 维。"""
+    """8×8 贪吃蛇，相对动作（0=左转 1=直行 2=右转），基础状态 9 维。
+
+    ⚠️ 这个类【只负责游戏规则】，不负责"喂给网络什么"。
+       表示层在 models/ 里的两个 wrapper（FeatObs / GridObs）。
+    """
 
     metadata = {"render_modes": ["rgb_array", "human"], "render_fps": 10}
 
-    def __init__(self, grid=W, max_hunger=MAX_HUNGER, use_space=True,
-                 use_deep=False, use_tail=False, render_mode=None, seed=None):
+    def __init__(self, grid=W, max_hunger=MAX_HUNGER, render_mode=None, seed=None):
         super().__init__()
         self.W = grid
         self.max_hunger = max_hunger
-        self.use_space = use_space          # [9:12]  flood fill（1 步前瞻）
-        self.use_deep = use_deep            # [d:d+3] 2 步前瞻的最差空间
-        self.use_tail = use_tail            # [t:t+3] 走完能否到达蛇尾
         self.render_mode = render_mode
 
-        self.obs_dim = 9 + (3 if use_space else 0) + \
-                       (3 if use_deep else 0) + (3 if use_tail else 0)
+        self.obs_dim = 9            # 基础 9 维；wrapper 会覆盖它（可能变成 (4,8,8)）
         self.observation_space = spaces.Box(
             low=-1.0, high=1.0, shape=(self.obs_dim,), dtype=np.float32)
         self.action_space = spaces.Discrete(3)      # 0=左转 1=直行 2=右转
@@ -260,12 +285,15 @@ class SnakeEnv(gym.Env):
     # ⭐ 唯一的规则实现 —— obs 和 step 都调它
     #    返回 (新蛇头, 是否吃到豆, 危险码)   危险码 0=安全 1=墙 2=身体
     # --------------------------------------------------------
-    def _simulate_from(self, body, direction, food, action):
-        """⭐ 唯一的规则实现。step / obs / flood fill / 2步前瞻 / heuristic 全调它。
+    def simulate_from(self, body, direction, food, action):
+        """⭐ 唯一的规则实现。step / 观测 / 2步前瞻 / heuristic 全调它。
 
         在【任意给定局面】下走一步，返回 (新蛇头, 是否吃到豆, 危险码)。
         抽成"传局面进来"而不是读 self，是为了 2 步前瞻能复用同一套判定 ——
         否则第 2 步又会变成"另一份实现"，和第 2 个坑一样。
+
+        ⚠️ 这是【给模型用的公共接口】，所以没有下划线。
+           想自己写特征的模型，只该依赖它，不该重新实现碰撞判定。
         """
         d = action_to_dir(direction, int(action))
         hr, hc = body[0]
@@ -283,12 +311,13 @@ class SnakeEnv(gym.Env):
 
         return (nr, nc), will_eat, EMPTY
 
-    def _simulate(self, action):
-        return self._simulate_from(self.snake, self.direction, self.food, action)
+    def simulate(self, action):
+        """在当前局面下走 action： → (新蛇头, 吃到没, 危险码)。见上面 simulate_from。"""
+        return self.simulate_from(self.snake, self.direction, self.food, action)
 
-    def _apply(self, action):
+    def apply(self, action):
         """走完 action 之后的局面：(新蛇身, 新朝向, 新食物位置或 None)。死了返回 None。"""
-        nh, eat, danger = self._simulate(action)
+        nh, eat, danger = self.simulate(action)
         if danger != EMPTY:
             return None
         body = [nh] + list(self.snake)
@@ -298,7 +327,7 @@ class SnakeEnv(gym.Env):
 
     def will_die(self, action):
         """走这个动作会不会立刻死。自测里用它对着 obs[0:3] 逐格核对。"""
-        return self._simulate(action)[2] != EMPTY
+        return self.simulate(action)[2] != EMPTY
 
     # --------------------------------------------------------
     # step
@@ -307,7 +336,7 @@ class SnakeEnv(gym.Env):
         self.steps += 1
         self.hunger += 1
 
-        new_head, will_eat, danger = self._simulate(action)
+        new_head, will_eat, danger = self.simulate(action)
 
         if danger != EMPTY:
             self.end_reason = "wall" if danger == WALL else "self"
@@ -335,9 +364,13 @@ class SnakeEnv(gym.Env):
         return self._get_obs(), 0.0, False, False, self._info()
 
     # --------------------------------------------------------
-    # 观测
+    # 棋盘工具（BFS）
+    #   ⚠️ reachable 留在游戏里是有意的：它是个【通用的图搜索】，
+    #      不是特征。heuristic.py（手写规则基线，不是模型）也要用它。
+    #      而 can_reach_tail / space_2step 是【特征的定义】，所以搬去了
+    #      models/feature.py —— 换模型不该动到游戏。
     # --------------------------------------------------------
-    def _reachable(self, start, occupied):
+    def reachable(self, start, occupied):
         """从 start 出发能走到的空格数（BFS）。occupied 是【移动后】的占位。"""
         from collections import deque
         seen = {start}
@@ -356,63 +389,20 @@ class SnakeEnv(gym.Env):
                 q.append((nr, nc))
         return n
 
-    def _can_reach_tail(self, body):
-        """蛇头能不能走到蛇尾？（在给定局面的空格图里 BFS）
-
-        ⭐ 这是 Snake 的经典安全判据：
-           只要能追到自己的尾巴，就可以一直跟着尾巴走 —— 【永远不会被围死】。
-           追不到，说明自己把自己圈进了一个封闭区域。
-        """
-        from collections import deque
-        head, tail = body[0], body[-1]
-        # 尾巴下一步会移开，所以它是【可以进】的
-        occ = set(body) - {tail}
-        seen = {head}
-        q = deque([head])
-        while q:
-            r, c = q.popleft()
-            for dr, dc in (UP, RIGHT, DOWN, LEFT):
-                nr, nc = r + dr, c + dc
-                if not (0 <= nr < self.W and 0 <= nc < self.W):
-                    continue
-                if (nr, nc) == tail:
-                    return True
-                if (nr, nc) in seen or (nr, nc) in occ:
-                    continue
-                seen.add((nr, nc))
-                q.append((nr, nc))
-        return False
-
-    def _space_2step(self, action):
-        """走 action 之后，【下一步】最差还能剩多少可达空间。
-
-        1 步前瞻只能看到"这一步之后"，而自陷是十几步的过程。
-        这里往前多看一步：走完 a 之后，对手（其实是自己）从 3 个后续里
-        挑最差的那个 —— 得到的数就是"这个选择的安全垫有多厚"。
-        """
-        nxt = self._apply(action)
-        if nxt is None:
-            return 0
-        body1, dir1, food1 = nxt
-        worst = None
-        for b in range(3):
-            nh, eat, danger = self._simulate_from(body1, dir1, food1, b)
-            if danger != EMPTY:
-                continue                      # 这一后续会死，不算"被逼"的选项
-            occ = set(body1) if eat else set(body1[:-1])
-            occ.discard(nh)
-            sp = self._reachable(nh, occ)
-            worst = sp if worst is None else min(worst, sp)
-        return 0 if worst is None else worst      # 3 个后续全死 → 0
-
+    # --------------------------------------------------------
+    # 观测：基础 9 维
+    #   ⭐ 这里【故意只算最便宜的那部分】—— 纯读状态，一次 BFS 都不跑。
+    #      贵的先验（flood fill / 2步前瞻 / 蛇尾可达）是【模型的选择】，
+    #      归 models/feature.py 的 FeatObs 管。
+    # --------------------------------------------------------
     def _get_obs(self):
         # ⚠️ 每次必须新建数组 —— 存引用的话整批数据会变成最后一帧
-        obs = np.zeros(self.obs_dim, dtype=np.float32)
+        obs = np.zeros(9, dtype=np.float32)
         head = self.snake[0]
 
         # [0:3] 三个动作的危险码
         for a in range(3):
-            _, _, danger = self._simulate(a)
+            _, _, danger = self.simulate(a)
             obs[a] = danger / 2.0            # 0 / 0.5 / 1
 
         # [3][4] 食物在【蛇头坐标系】的方位
@@ -436,36 +426,6 @@ class SnakeEnv(gym.Env):
         # [8] 头到尾的距离
         tail = self.snake[-1]
         obs[8] = (abs(head[0] - tail[0]) + abs(head[1] - tail[1])) / (2 * (self.W - 1))
-
-        # ---- 三组"走这一步会怎样"的特征，下标都和动作 0/1/2 对齐 ----
-        off = 9
-
-        # flood fill：走这个动作之后还剩多少可达空间（1 步前瞻）
-        if self.use_space:
-            for a in range(3):
-                new_head, will_eat, danger = self._simulate(a)
-                if danger != EMPTY:
-                    obs[off + a] = 0.0
-                    continue
-                occ = set(self.snake) if will_eat else set(self.snake[:-1])
-                occ.discard(new_head)
-                obs[off + a] = self._reachable(new_head, occ) / (self.W * self.W)
-            off += 3
-
-        # 2 步前瞻：走 a 之后，下一步【最差】还剩多少空间
-        #   1 步前瞻看不到"盘死"的过程，这个往前多看一步
-        if self.use_deep:
-            for a in range(3):
-                obs[off + a] = self._space_2step(a) / (self.W * self.W)
-            off += 3
-
-        # 走 a 之后，蛇头能不能到达蛇尾
-        #   能追到尾巴 = 可以一直跟着尾巴走 = 永远不会被围死
-        if self.use_tail:
-            for a in range(3):
-                nxt = self._apply(a)
-                obs[off + a] = 0.0 if nxt is None else float(self._can_reach_tail(nxt[0]))
-            off += 3
 
         return obs
 
@@ -556,18 +516,16 @@ if __name__ == "__main__":
     env = SnakeEnv()
 
     # ---- 2. 观测的形状 / dtype / 范围 ----
-    print("\n[2] 观测规格")
+    print("\n[2] 观测规格（基础 9 维）")
     obs, info = env.reset(seed=0)
-    check("shape == (12,)", obs.shape == (12,), str(obs.shape))
+    check("shape == (9,)", obs.shape == (9,), str(obs.shape))
     check("dtype == float32", obs.dtype == np.float32, str(obs.dtype))
-    for flags, want in [((True, False, False), 12), ((True, True, False), 15),
-                        ((True, False, True), 15), ((True, True, True), 18),
-                        ((False, False, False), 9),
-                        ((False, True, True), 15)]:
-        e = SnakeEnv(use_space=flags[0], use_deep=flags[1], use_tail=flags[2])
-        o, _ = e.reset(seed=0)
-        check(f"obs_dim 组合 space={int(flags[0])} deep={int(flags[1])} tail={int(flags[2])} → {want}",
-              e.obs_dim == want and o.shape == (want,), f"{e.obs_dim}/{o.shape}")
+    check("obs_dim == 9", env.obs_dim == 9, str(env.obs_dim))
+    check("observation_space 和 obs 对得上", env.observation_space.shape == (9,))
+    check("⚠️ 游戏【不再】有 use_space/use_deep/use_tail 开关",
+          not any(hasattr(env, k) for k in ("use_space", "use_deep", "use_tail")))
+    check("⚠️ 游戏【不再】有 BFS 特征方法（搬去 models/feature.py 了）",
+          not any(hasattr(env, k) for k in ("_can_reach_tail", "_space_2step")))
     lo, hi = 1e9, -1e9
     for _ in range(2000):
         a = env.action_space.sample()
@@ -632,7 +590,7 @@ if __name__ == "__main__":
     env.snake = [(4, 4), (5, 4), (5, 3), (4, 3)]
     env.direction = LEFT
     check("左走的目标格正是尾格", env.snake[-1] == (4, 3))
-    check("_simulate 判为安全", env._simulate(1)[2] == EMPTY)
+    check("simulate 判为安全", env.simulate(1)[2] == EMPTY)
     _, r, te, _, _ = env.step(1)
     check("走进去确实活着", not te, f"reward={r}")
     # 反过来：吃到豆那一步尾巴不动，进尾格就该死
@@ -640,7 +598,7 @@ if __name__ == "__main__":
     env.snake = [(4, 4), (5, 4), (5, 3), (4, 3)]
     env.direction = LEFT
     env.food = (4, 3)          # 尾格上放豆 → 尾巴不动 → 撞自己
-    check("尾格上有豆时，进尾格判为撞身体", env._simulate(1)[2] == BODY)
+    check("尾格上有豆时，进尾格判为撞身体", env.simulate(1)[2] == BODY)
 
     # ---- 7. 吃豆 / 撞墙 / 咬自己 / 饿死 ----
     print("\n[7] 四条结束路径")
@@ -743,75 +701,19 @@ if __name__ == "__main__":
     check("首帧与末帧不共享内存", not np.shares_memory(o_first, o_last))
     check("首帧与末帧内容不同", not np.array_equal(o_first, o_last))
 
-    # ---- 12. 新增的三组特征：语义对不对 ----
-    print("\n[12] 2 步前瞻 / 蛇尾可达 的语义自测")
+    # ---- 12. 【搬走了】先验特征的自测 ----
+    print("\n[12] 先验特征（flood fill / 2步前瞻 / 蛇尾可达）")
+    print("   ⏭  已搬到 models/feature.py —— 那是【模型的选择】，不是游戏规则。")
+    print("      跑 `uv run python models/feature.py` 看那 37 条断言。")
 
-    e7 = SnakeEnv(use_deep=True, use_tail=True)
-    check("obs_dim == 18", e7.obs_dim == 18, str(e7.obs_dim))
-
-    # 蛇尾可达：头紧贴着尾巴（一个 2×2 的环）→ 应该能追到
+    # 游戏这边只剩一条：公共接口还在，且能用
+    e7 = SnakeEnv()
     e7.reset(seed=2)
     e7.snake = [(4, 4), (5, 4), (5, 3), (4, 3)]
     e7.direction = LEFT
-    _, _, danger = e7._simulate_from(e7.snake, e7.direction, e7.food, 1)
-    body1, _, _ = e7._apply(1)
-    check("2×2 环里，走一步后能追到尾巴", e7._can_reach_tail(body1))
-
-    # 蛇头被自己【完全包死】→ 追不到尾巴
-    #   螺旋：(4,4) 的上下左右 (3,4)(5,4)(4,3)(4,5) 全是自己的身体
-    e7.reset(seed=2)
-    e7.snake = [(4, 4), (4, 3), (5, 3), (5, 4), (5, 5),
-                (4, 5), (3, 5), (3, 4), (3, 3)]
-    e7.direction = UP
-    check("头的四个邻居全是身体", all(
-        e7._simulate_from(e7.snake, e7.direction, e7.food, a)[2] == BODY for a in range(3)))
-    check("被包死时追不到尾巴", not e7._can_reach_tail(e7.snake))
-    check("被包死时 _reachable == 0", e7._reachable(e7.snake[0], set(e7.snake)) == 0)
-
-    # 2 步前瞻：走一步会撞死 → 0
-    e7.reset(seed=3)
-    e7.snake = [(0, 3), (0, 2), (0, 1)]
-    e7.direction = UP
-    check("必死的动作 → 2 步前瞻空间为 0", e7._space_2step(1) == 0)
-
-    # 2 步前瞻一般 ≤ 1 步前瞻 —— 但【不是恒成立】：
-    #   两次前瞻的占位集合不同（第 2 步时尾巴又移开了一格），
-    #   所以"再看一步"偶尔能看到【更多】空间。
-    #   这里只断言"绝大多数情况更保守"，不假装它是定理。
-    e7.reset(seed=3)
-    worse, total = 0, 0
-    for _ in range(400):
-        for a in range(3):
-            nh, eat, danger = e7._simulate(a)
-            if danger != EMPTY:
-                continue
-            occ = set(e7.snake) if eat else set(e7.snake[:-1])
-            occ.discard(nh)
-            sp1 = e7._reachable(nh, occ)
-            sp2 = e7._space_2step(a)
-            total += 1
-            if sp2 > sp1:
-                worse += 1
-            assert 0 <= sp2 <= e7.W * e7.W
-        a = e7.action_space.sample()
-        _, _, te, _, _ = e7.step(a)
-        if te:
-            e7.reset()
-    check("2 步前瞻绝大多数更保守（不是恒成立）",
-          worse / total < 0.02, f"{worse}/{total} = {worse/total*100:.2f}% 例外")
-
-    # 新特征不能越界
-    for flags in [(True, True, False), (True, False, True), (True, True, True)]:
-        e8 = SnakeEnv(use_deep=flags[1], use_tail=flags[2])
-        lo2, hi2 = 1e9, -1e9
-        o, _ = e8.reset()
-        for _ in range(1500):
-            o, _, te, _, _ = e8.step(e8.action_space.sample())
-            lo2, hi2 = min(lo2, o.min()), max(hi2, o.max())
-            if te:
-                e8.reset()
-        check(f"space/deep={int(flags[1])} tail={int(flags[2])} 观测仍在 [-1,1]",
-              lo2 >= -1.0 and hi2 <= 1.0, f"[{lo2:.3f}, {hi2:.3f}]")
+    check("simulate_from 在任意局面上可用", e7.simulate_from(e7.snake, LEFT, e7.food, 1)[2] == EMPTY)
+    check("apply 返回走完之后的整个局面", e7.apply(1) is not None)
+    check("reachable 可用（heuristic.py 也靠它）", e7.reachable((4, 4), set(e7.snake)) >= 0)
 
     # ---- 13. 渲染 ----
     print("\n[13] 渲染")
