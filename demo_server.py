@@ -44,8 +44,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # 多久没人访问就自动暂停。
 # 本地无感；线上很重要 —— 没人看的时候不该让 4 个核继续跑两个模型。
-# （再往后由 systemd 的 IdleTimeoutSec 直接把进程杀掉，内存也还回去。）
 IDLE_PAUSE = 30.0
+
+# 空闲这么久就【整个进程退出】，把内存也还回去（下次访问由 systemd 的
+# .socket 单元再拉起来）。只在 socket 激活模式下生效，本地跑不受影响。
+#
+# ⚠️ 为什么不直接用 systemd 的 TimeoutIdleSec：那是个 systemd 指令，
+#    不同版本行为/名字不一定一样（这台是 systemd 259，文档都查不全）。
+#    自己退出还多一个好处 —— journal 里能看到"为什么没了"。
+# （SN_IDLE_EXIT 是给测试用的：不用等十分钟就能验这条路径）
+IDLE_EXIT = float(os.environ.get("SN_IDLE_EXIT", 600.0))
+
+# main() 里如果发现自己是 systemd 拉起来的，会置 True
+SOCKET_ACTIVATED = False
 
 REASON_CN = {"wall": "撞墙", "self": "咬到自己", "starve": "饿死", "win": "填满整盘！"}
 
@@ -234,13 +245,25 @@ class Arena:
     def _loop(self):
         while True:
             with self.lock:
+                # ⭐ 空闲退出必须放在【最前面】，在 `if not self.running` 之前。
+                #
+                #    踩过的坑：IDLE_PAUSE(30s) 一定会先于 IDLE_EXIT(600s) 触发，
+                #    把 running 置成 False；而 running=False 之后，循环每轮都会在
+                #    下面那个 continue 上跳走 —— 等于退出检查永远走不到，成了死代码。
+                #    （本地把阈值压到 6 秒才测出来：等了 30 秒进程还活着。）
+                #
+                #    os._exit 而不是 sys.exit：这里不是主线程，sys.exit 退不出去。
+                if SOCKET_ACTIVATED and time.time() - self.last_seen > IDLE_EXIT:
+                    print(f"  空闲 {time.time() - self.last_seen:.0f}s，进程退出"
+                          f"（下次访问由 systemd 的 snake.socket 再拉起来）", flush=True)
+                    os._exit(0)
+
                 if not self.running:
                     time.sleep(0.05)
                     continue
 
                 # 没人看就先停 —— 线上别让两个模型空转。
-                # 注意顺序：放在 step 之前，停了这一次就不再往下走。
-                if self.running and time.time() - self.last_seen > IDLE_PAUSE:
+                if time.time() - self.last_seen > IDLE_PAUSE:
                     self.running = False
                     self.auto_paused = True
                     continue
@@ -385,8 +408,19 @@ def main():
 
     ARENA = Arena()
 
+    global SOCKET_ACTIVATED
+
     sock = systemd_socket()
-    if sock is not None:
+
+    # 测试用：SN_FAKE_SOCKET=1 假装是 systemd 拉起来的。
+    # 用来在本机验「空闲退出」——不然要等 10 分钟，或者真去装个 systemd。
+    if os.environ.get("SN_FAKE_SOCKET"):
+        SOCKET_ACTIVATED = True
+        srv = ThreadingHTTPServer((HOST, PORT), Handler)
+        print(f"  （SN_FAKE_SOCKET：假装是 socket 激活，本地起在 {HOST}:{PORT}）", flush=True)
+        print("   → 用来验下面的空闲退出逻辑", flush=True)
+    elif sock is not None:
+        SOCKET_ACTIVATED = True
         # 接 systemd 的 fd。bind_and_activate=False 是因为轮不到我们 bind/listen ——
         # systemd 早就 listen 好了，我们只管 accept。
         srv = ThreadingHTTPServer((HOST, PORT), Handler, bind_and_activate=False)
