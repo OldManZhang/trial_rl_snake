@@ -93,13 +93,22 @@ class Side:
 
         if term or trunc:
             self.done = True
-            reason = info["end_reason"]
-            self.death = REASON_CN.get(reason, str(reason))
-            self.games += 1
-            self.history.append(info["food_eaten"])
-            self.reasons[reason] += 1
-            if reason == "win":
-                self.home += 1
+            self.death = REASON_CN.get(info["end_reason"], str(info["end_reason"]))
+
+    def record(self):
+        """把这一盘的成绩记进累计。
+
+        ⚠️ 不在这里判「该不该记」—— 由 Arena 统一决定（见 _new_board_locked）。
+           理由：如果死的时候就各自记分，中途按「新棋局」时，
+           死得早的那边已经记了、还活着的那边那盘被丢掉，
+           两边的局数就对不上，均分也就没法比了。
+        """
+        reason = self.info["end_reason"]
+        self.games += 1
+        self.history.append(self.info["food_eaten"])
+        self.reasons[reason] += 1
+        if reason == "win":
+            self.home += 1
 
     # --------------------------------------------------------
     def snapshot(self):
@@ -157,7 +166,17 @@ class Arena:
 
     # --------------------------------------------------------
     def _new_board_locked(self):
-        """⭐ 两边吃同一个 seed —— 所以是同一盘开局。"""
+        """开一盘新的。
+
+        ⭐ 两层「一样」保证了均分可比：
+           1. 两边吃同一个 seed —— 同一盘开局
+           2. **只有两边都打完的那一盘才记分** —— 中途按「新棋局」时两边都不记，
+              不会出现"死得早的先记了"这种一边多一边少
+        """
+        if all(s.done for s in self.sides):
+            for s in self.sides:
+                s.record()
+
         self.seed = random.randrange(1, 10 ** 9)
         self.round += 1
         for s in self.sides:
