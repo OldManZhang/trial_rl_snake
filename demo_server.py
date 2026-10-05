@@ -249,48 +249,63 @@ class Arena:
 
     # --------------------------------------------------------
     def _loop(self):
-        while True:
+        """游戏主循环。
+
+        ⚠️⚠️ 铁律：**绝对不能在 `with self.lock` 里面 sleep。**
+
+        线上真炸过一次，记在这儿：原来 "游戏停着" 那一支写的是
+
             with self.lock:
-                # ⭐ 空闲退出必须放在【最前面】，在 `if not self.running` 之前。
+                if not self.running:
+                    time.sleep(0.05)      # ← 抱着锁睡
+                    continue
+
+        于是只要游戏停在"停着"的状态（两边都死了、等人工点「新棋盘」），
+        这个循环就【几乎 100% 的时间占着锁】，每个 HTTP 请求都得排队等。
+        请求一慢，浏览器就开更多连接，而 ThreadingHTTPServer 线程数【没有上限】——
+        实测堆到 288 个线程、278 个 ESTABLISHED，请求 30 秒级超时，整台假死。
+
+        为什么是老代码却这时才炸：以前两边死后 1.5 秒会自动开新盘，running 几乎
+        总是 True，那条分支很少进。改成"不自动重开"之后才开始长时间停在那儿。
+
+        改法：锁里只【算】下一步该歇多久，sleep 挪到锁外面。
+        """
+        while True:
+            nap = 0.05
+            with self.lock:
+                # 空闲退出放最前面 —— 它必须在 `if not self.running` 之前。
+                # IDLE_PAUSE 一定会先于 IDLE_EXIT 触发、把 running 置 False，
+                # 而 running=False 之后每轮都会短路走开，退出检查就成了死代码。
                 #
-                #    踩过的坑：IDLE_PAUSE(30s) 一定会先于 IDLE_EXIT(600s) 触发，
-                #    把 running 置成 False；而 running=False 之后，循环每轮都会在
-                #    下面那个 continue 上跳走 —— 等于退出检查永远走不到，成了死代码。
-                #    （本地把阈值压到 6 秒才测出来：等了 30 秒进程还活着。）
-                #
-                #    os._exit 而不是 sys.exit：这里不是主线程，sys.exit 退不出去。
+                # os._exit 而不是 sys.exit：这里不是主线程，sys.exit 退不出去。
                 if SOCKET_ACTIVATED and time.time() - self.last_seen > IDLE_EXIT:
                     print(f"  空闲 {time.time() - self.last_seen:.0f}s，进程退出"
                           f"（下次访问由 systemd 的 snake.socket 再拉起来）", flush=True)
                     os._exit(0)
 
                 if not self.running:
-                    time.sleep(0.05)
-                    continue
+                    nap = 0.05                      # 停着 —— 轻量轮询等唤醒
 
                 # 没人看就先停 —— 线上别让两个模型空转。
-                if time.time() - self.last_seen > IDLE_PAUSE:
+                elif time.time() - self.last_seen > IDLE_PAUSE:
                     self.running = False
                     self.auto_paused = True
-                    continue
+                    nap = 0.05
 
-                for s in self.sides:
-                    s.step()
+                else:
+                    for s in self.sides:
+                        s.step()
 
-                # ⭐ 两边都完了 —— 【停在这儿，不自动开下一盘】。
-                #    自动重开的话，刚看清"它是怎么死的"就被冲掉了，
-                #    而且两边谁先死谁后死也来不及比。等人工点「新棋盘」。
-                #
-                #    在【同一次迭代里】就置 False —— 拖到下一轮的话，
-                #    第二边刚死那一瞬间网页会看到 running=True（按钮显示"暂停"），
-                #    下一帧才纠正过来，白闪一下。
-                if all(s.done for s in self.sides):
-                    self.running = False
-                    continue
+                    # 两边都完了 —— 停在这儿，不自动开下一盘（等人工点「新棋盘」）。
+                    # 在同一次迭代里就置 False：拖到下一轮的话，第二边刚死那一瞬间
+                    # 网页会看到 running=True，下一帧才纠正，白闪一下。
+                    if all(s.done for s in self.sides):
+                        self.running = False
+                        nap = 0.05
+                    else:
+                        nap = 1.0 / self.speed
 
-                speed = self.speed
-
-            time.sleep(1.0 / speed)
+            time.sleep(nap)
 
     # --------------------------------------------------------
     def health(self):
@@ -323,7 +338,25 @@ class Arena:
 ARENA = None
 
 
+class Server(ThreadingHTTPServer):
+    """ThreadingHTTPServer 的两个默认值在公网上不够用，改掉。
+
+    ⚠️ 背景：这台服务被浏览器以 20 次/秒轮询。默认 `request_queue_size = 5`
+       意味着监听队列只排 5 个连接，一超就被拒 —— 而 Caddy 会重试，
+       越重试越堵。抬到 64。
+    """
+    daemon_threads = True
+    allow_reuse_address = True
+    request_queue_size = 64
+
+
 class Handler(BaseHTTPRequestHandler):
+    # ⚠️ 默认是 HTTP/1.0 —— 那意味着【每个请求都要新建一条 TCP 连接】。
+    #    浏览器 20 次/秒轮询 = 20 条/秒，全走 Caddy 转进来，连接churn 极大。
+    #    改成 1.1 之后 Caddy 能复用连接，实测连接数从几百降到个位数。
+    #    前提：每个响应都必须带 Content-Length —— 下面的 _send 一直都有。
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, *a):
         pass                                  # 关掉默认的逐条打印，太吵
 
@@ -422,21 +455,21 @@ def main():
     # 用来在本机验「空闲退出」——不然要等 10 分钟，或者真去装个 systemd。
     if os.environ.get("SN_FAKE_SOCKET"):
         SOCKET_ACTIVATED = True
-        srv = ThreadingHTTPServer((HOST, PORT), Handler)
+        srv = Server((HOST, PORT), Handler)
         print(f"  （SN_FAKE_SOCKET：假装是 socket 激活，本地起在 {HOST}:{PORT}）", flush=True)
         print("   → 用来验下面的空闲退出逻辑", flush=True)
     elif sock is not None:
         SOCKET_ACTIVATED = True
         # 接 systemd 的 fd。bind_and_activate=False 是因为轮不到我们 bind/listen ——
         # systemd 早就 listen 好了，我们只管 accept。
-        srv = ThreadingHTTPServer((HOST, PORT), Handler, bind_and_activate=False)
+        srv = Server((HOST, PORT), Handler, bind_and_activate=False)
         srv.socket.close()                 # 上面那行顺手建了个没用的 socket，关掉
         srv.socket = sock
         srv.server_address = sock.getsockname()
         print(f"  （由 systemd socket 激活启动，fd 3 = {srv.server_address}）", flush=True)
         print("   → 线上由 Caddy 转进来", flush=True)
     else:
-        srv = ThreadingHTTPServer((HOST, PORT), Handler)
+        srv = Server((HOST, PORT), Handler)
         print(f"  → 浏览器打开   http://{HOST}:{PORT}", flush=True)
     print("=" * 62, flush=True)
 
