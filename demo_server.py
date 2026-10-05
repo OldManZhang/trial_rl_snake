@@ -42,9 +42,16 @@ from ppo import load_for_view
 HOST, PORT = "127.0.0.1", 8770
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# 多久没人访问就自动暂停。
-# 本地无感；线上很重要 —— 没人看的时候不该让 4 个核继续跑两个模型。
-IDLE_PAUSE = 30.0
+# ---- 两个空闲阈值 ----
+#
+# 为什么不是 30 秒：线上实测过一次 **19.9 秒** 的响应 —— 那不是冷启动慢
+# （冷启动本身只要 0.3 秒），是进程退出之后，内核把 torch 那几百 MB 的 .so
+# 从内存里挤出去了，下一个访客要等云盘把它们重新读回来。
+# 所以频繁退出反而更慢。
+#
+# 现在：不玩 10 分钟先停（省 CPU），再等 20 分钟才退（省内存）。
+# 留 30 分钟是为了让 page cache 尽量还热着 —— 这期间来的访客是毫秒级响应。
+IDLE_PAUSE = float(os.environ.get("SN_IDLE_PAUSE", 600.0))    # 10 分钟：暂停游戏
 
 # 空闲这么久就【整个进程退出】，把内存也还回去（下次访问由 systemd 的
 # .socket 单元再拉起来）。只在 socket 激活模式下生效，本地跑不受影响。
@@ -52,8 +59,7 @@ IDLE_PAUSE = 30.0
 # ⚠️ 为什么不直接用 systemd 的 TimeoutIdleSec：那是个 systemd 指令，
 #    不同版本行为/名字不一定一样（这台是 systemd 259，文档都查不全）。
 #    自己退出还多一个好处 —— journal 里能看到"为什么没了"。
-# （SN_IDLE_EXIT 是给测试用的：不用等十分钟就能验这条路径）
-IDLE_EXIT = float(os.environ.get("SN_IDLE_EXIT", 600.0))
+IDLE_EXIT = float(os.environ.get("SN_IDLE_EXIT", 1800.0))     # 30 分钟：退出进程
 
 # main() 里如果发现自己是 systemd 拉起来的，会置 True
 SOCKET_ACTIVATED = False

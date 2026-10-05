@@ -68,6 +68,17 @@
     50%    {box-shadow:0 0 0 6px rgba(150,240,175,.16)}
   }
   button.primary.attn{animation:attn 1.3s ease-in-out infinite}
+
+  /* 请求在飞的时候：按钮变灰 + 控制条上转圈。
+     点下去【立刻】有反应，不至于"点了没动静，以为坏了"。
+     这条是为按需启动准备的 —— 冷的时候可能要等十几秒。 */
+  #spin{
+    width:14px; height:14px; flex:none;
+    border:2px solid var(--line); border-top-color:var(--feat);
+    border-radius:50%; opacity:0; transition:opacity .12s;
+  }
+  body.busy #spin{opacity:1; animation:spin .7s linear infinite}
+  body.busy button{opacity:.45; pointer-events:none}
   .spd{display:flex; align-items:center; gap:8px; color:var(--muted); font-size:13px;
        margin-left:auto}
   .spd input{width:130px; accent-color:var(--feat)}
@@ -137,6 +148,7 @@
   <button id="b-new" class="primary">新棋盘</button>
   <button id="b-toggle">暂停</button>
   <button id="b-step">单步</button>
+  <span id="spin" aria-hidden="true"></span>
   <div class="spd">
     速度 <input id="speed" type="range" min="1" max="60" value="15">
     <b id="spd-v">15</b> 步/秒
@@ -147,7 +159,7 @@
   <div class="wk">
     <div class="spin"></div>
     <b>正在唤醒模型…</b>
-    <span>服务是按需启动的，第一次访问要等几秒</span>
+    <span>服务按需启动 —— 一般几秒，偶尔要十几秒<br>（内核要把模型从磁盘读回内存）</span>
   </div>
 </div>
 
@@ -358,36 +370,68 @@ function render(st){
       静态文件服务器那种"遇到目录自动 301 补斜杠"的行为在这里不会发生。
    ⚠️ 也别写死成 "/state" —— 那是绝对路径，放到子路径下会打到域名根目录。 */
 
-let ready = false;     // 有没有成功拿到过一次 state
-let misses = 0;        // 连续失败了几次
+/* ---- 请求 + 两层反馈 ----
+   ⚠️ 这一块解决的是"点了没反应，用户干等"。
+
+   服务是【按需启动】的：空闲 30 分钟进程就没了。这时点「新棋盘」，
+   systemd 要先拉进程。更慢的一种情况是进程刚退出不久 —— 内核把 torch
+   那几百 MB 的 .so 从内存里挤掉了，得从云盘重新读回来，
+   **实测有一次 19.9 秒**。
+
+   所以两层反馈：
+     快（<600ms）  按钮变灰 + 控制条上转圈 —— 点下去立刻知道"收到了"
+     慢（>600ms）  亮遮罩"正在唤醒模型…" —— 明确告诉他在等什么
+   连失败 3 次也亮遮罩（进程还没起来时，前几次 fetch 必然失败）。 */
+let reqDepth = 0;      // 有几个请求在飞（>0 就转圈 + 禁按钮）
+let slowN = 0;         // 有几个请求已经超过 600ms 还没回来
+let failures = 0;      // 连续失败了几次
+
+const wakeEl = () => document.getElementById("wake");
+
+/* ⚠️ 遮罩的显示必须【集中算】，不能让每个请求各管各的。
+   踩过的坑：轮询每 50ms 成功一次，每次都写 wake.hidden = true ——
+   把那个慢请求（点「新棋盘」）刚刚点亮的遮罩又按回去了。
+   所以做成计数：只要还有慢的、或者连续失败够多，就亮着。 */
+function syncWake(){
+  wakeEl().hidden = !(slowN > 0 || failures >= 3);
+}
+
+async function api(path, opts){
+  reqDepth++;
+  document.body.classList.add("busy");
+
+  let isSlow = false;
+  const slow = setTimeout(() => { isSlow = true; slowN++; syncWake(); }, 600);
+
+  try {
+    const r = await fetch(path, opts);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const j = await r.json();
+    failures = 0;
+    return j;
+  } catch (e){
+    failures++;
+    throw e;
+  } finally {
+    clearTimeout(slow);
+    if (isSlow) slowN--;
+    if (--reqDepth === 0) document.body.classList.remove("busy");
+    syncWake();
+  }
+}
 
 async function poll(){
-  const wake = document.getElementById("wake");
-  try {
-    const r = await fetch("state", { cache:"no-store" });
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    render(await r.json());
-    misses = 0;
-    ready = true;
-    wake.hidden = true;
-  } catch (e){
-    /* 按需启动时，一开始必然是失败的 —— systemd 正在拉进程、Python 正在
-       import torch。连失败 3 次（约 150ms）才亮遮罩：偶发的一次网络抖动
-       不该让画面闪一下。 */
-    if (ready) return;              // 已经跑起来过，就是单纯断了，别弹遮罩
-    if (++misses >= 3) wake.hidden = false;
-  }
+  try { render(await api("state", { cache:"no-store" })); } catch (e){ /* 下一轮再试 */ }
 }
 
 async function cmd(body){
   try {
-    const r = await fetch("cmd", {
+    render(await api("cmd", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    });
-    if (r.ok) render(await r.json());
-  } catch (e){}
+    }));
+  } catch (e){ /* 遮罩已经亮了，用户知道在等 */ }
 }
 
 document.getElementById("b-new").onclick    = () => cmd({cmd:"new"});
