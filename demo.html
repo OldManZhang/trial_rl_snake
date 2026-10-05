@@ -46,6 +46,22 @@
   button:disabled{opacity:.35; cursor:default}
   button:disabled:hover{background:#1e242f; border-color:var(--line)}
   button:disabled:active{transform:none}
+  /* 唤醒遮罩：按需启动时，第一个访客会看到这个（几秒） */
+  #wake{
+    position:fixed; inset:0; z-index:9; display:grid; place-items:center;
+    background:rgba(13,16,23,.92); backdrop-filter:blur(3px);
+  }
+  #wake[hidden]{display:none}
+  .wk{text-align:center; color:var(--fg)}
+  .wk b{display:block; font-size:15px; margin-bottom:6px}
+  .wk span{display:block; color:var(--faint); font-size:12.5px}
+  .spin{
+    width:26px; height:26px; margin:0 auto 14px;
+    border:2.5px solid var(--line); border-top-color:var(--feat);
+    border-radius:50%; animation:spin .8s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+
   /* 两边都完了 → 新棋盘发光，提示"下一步点这里" */
   @keyframes attn{
     0%,100%{box-shadow:0 0 0 0 rgba(150,240,175,0)}
@@ -124,6 +140,14 @@
   <div class="spd">
     速度 <input id="speed" type="range" min="1" max="60" value="15">
     <b id="spd-v">15</b> 步/秒
+  </div>
+</div>
+
+<div id="wake" hidden>
+  <div class="wk">
+    <div class="spin"></div>
+    <b>正在唤醒模型…</b>
+    <span>服务是按需启动的，第一次访问要等几秒</span>
   </div>
 </div>
 
@@ -333,11 +357,25 @@ function render(st){
       Caddy 的 file_server 遇到目录会自动 301 补上斜杠，所以这点不用额外处理。
    ⚠️ 也别写死成 "/state" —— 那是绝对路径，放到子路径下会打到域名根目录。 */
 
+let ready = false;     // 有没有成功拿到过一次 state
+let misses = 0;        // 连续失败了几次
+
 async function poll(){
+  const wake = document.getElementById("wake");
   try {
     const r = await fetch("state", { cache:"no-store" });
-    if (r.ok) render(await r.json());
-  } catch (e){ /* 服务还没起来 / 正在唤醒，静静等着下一轮 */ }
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    render(await r.json());
+    misses = 0;
+    ready = true;
+    wake.hidden = true;
+  } catch (e){
+    /* 按需启动时，一开始必然是失败的 —— systemd 正在拉进程、Python 正在
+       import torch。连失败 3 次（约 150ms）才亮遮罩：偶发的一次网络抖动
+       不该让画面闪一下。 */
+    if (ready) return;              // 已经跑起来过，就是单纯断了，别弹遮罩
+    if (++misses >= 3) wake.hidden = false;
+  }
 }
 
 async function cmd(body){
